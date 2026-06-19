@@ -1,0 +1,8 @@
+torch>=2.0
+torchtext
+numpy
+matplotlib
+spacy
+sacrebleu
+tqdm
+pyyaml
