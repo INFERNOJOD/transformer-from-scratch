@@ -74,7 +74,7 @@ A complete implementation of the Transformer architecture built from first princ
 | 512 | 0.709 | 0.653 | **1.09×** | 32 MB |
 | 1024 | 2.652 | 2.224 | **1.19×** | 128 MB |
 
-*Measured on a Tesla T4 GPU (Google Colab).*
+> Results below were obtained on a Google Colab Tesla T4 GPU using the baseline Transformer (N=3, d_model=256) trained for 8 epochs on the Multi30k German→English dataset.
 
 *To populate: run `python benchmark.py --save` on Colab and paste output here.*
 
