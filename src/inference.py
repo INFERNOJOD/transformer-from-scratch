@@ -82,7 +82,11 @@ def translate(sentence: str, model, vocab_src, vocab_tgt, spacy_de, device,
 
 def load_model(checkpoint_path: str, device):
     print(f"Loading checkpoint: {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(
+        checkpoint_path,
+        map_location=device,
+        weights_only=False,
+    )
 
     vocab_src = ckpt["vocab_src"]
     vocab_tgt = ckpt["vocab_tgt"]
