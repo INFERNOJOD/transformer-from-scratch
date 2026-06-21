@@ -1,0 +1,89 @@
+{
+  "device": "cuda",
+  "pytorch_version": "2.11.0+cu128",
+  "results": {
+    "attention": [
+      {
+        "seq_len": 64,
+        "standard_ms": 0.106,
+        "flash_ms": 0.049,
+        "speedup": 2.15,
+        "mem_saved_mb": 0.5
+      },
+      {
+        "seq_len": 128,
+        "standard_ms": 0.123,
+        "flash_ms": 0.077,
+        "speedup": 1.606,
+        "mem_saved_mb": 2.0
+      },
+      {
+        "seq_len": 256,
+        "standard_ms": 0.264,
+        "flash_ms": 0.185,
+        "speedup": 1.425,
+        "mem_saved_mb": 8.0
+      },
+      {
+        "seq_len": 512,
+        "standard_ms": 0.709,
+        "flash_ms": 0.653,
+        "speedup": 1.086,
+        "mem_saved_mb": 32.0
+      },
+      {
+        "seq_len": 1024,
+        "standard_ms": 2.652,
+        "flash_ms": 2.224,
+        "speedup": 1.192,
+        "mem_saved_mb": 128.0
+      }
+    ],
+    "kv_cache": [
+      {
+        "decode_steps": 10,
+        "no_cache_ms": 53.941,
+        "cache_ms": 51.488,
+        "speedup": 1.048
+      },
+      {
+        "decode_steps": 20,
+        "no_cache_ms": 109.869,
+        "cache_ms": 103.867,
+        "speedup": 1.058
+      },
+      {
+        "decode_steps": 40,
+        "no_cache_ms": 221.627,
+        "cache_ms": 286.155,
+        "speedup": 0.775
+      },
+      {
+        "decode_steps": 80,
+        "no_cache_ms": 439.281,
+        "cache_ms": 433.341,
+        "speedup": 1.014
+      }
+    ],
+    "mixed_precision": [
+      {
+        "batch_size": 4,
+        "fp32_ms": 31.46,
+        "amp_ms": 36.948,
+        "speedup": 0.851
+      },
+      {
+        "batch_size": 8,
+        "fp32_ms": 31.656,
+        "amp_ms": 37.783,
+        "speedup": 0.838
+      },
+      {
+        "batch_size": 16,
+        "fp32_ms": 32.563,
+        "amp_ms": 38.135,
+        "speedup": 0.854
+      }
+    ]
+  }
+}
