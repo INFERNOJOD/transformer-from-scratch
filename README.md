@@ -98,6 +98,8 @@ A complete implementation of the Transformer architecture built from first princ
 
 *For this compact (~9.36M parameter) model on a Tesla T4, automatic mixed precision did not improve latency. This is expected for relatively small Transformer models where AMP overhead outweighs the computational savings.*
 
+**Note**: Flash Attention consistently improved attention throughput (up to 2.15× at shorter sequence lengths). KV Cache and mixed precision showed limited improvements for this compact 9.36M parameter model, illustrating that some inference optimizations become significantly more beneficial at larger model scales.
+
 ---
 
 ## LR Schedule
