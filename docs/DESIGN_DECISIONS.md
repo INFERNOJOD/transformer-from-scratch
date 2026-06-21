@@ -244,3 +244,23 @@ handles this by keeping a master copy of weights in FP32, running the
 forward/backward pass in FP16 where safe, and using a dynamically-adjusted
 loss scaling factor (`GradScaler`) to prevent small gradients from
 underflowing to zero during backpropagation.
+
+---
+
+## Why a custom data pipeline instead of torchtext?
+
+The original implementation followed the data-loading pattern from the
+Annotated Transformer reference (torchtext's `Multi30k` dataset loader,
+`build_vocab_from_iterator`, `to_map_style_dataset`). `torchtext` was
+deprecated by its maintainers in September 2023; its final release
+(0.18.0) only supports PyTorch ≤2.3.0, and current Colab runtimes ship
+PyTorch 2.4+ without it.
+
+Rather than pin an old PyTorch version (which risks cascading conflicts
+with other dependencies and doesn't fix anything long-term), `data_pipeline.py`
+replaces exactly the three torchtext call sites with HuggingFace `datasets`
+(actively maintained) for loading, and a minimal custom `Vocab` class that
+mirrors torchtext's original interface (`vocab(tokens)`, `vocab["<tok>"]`,
+`set_default_index`, `get_itos()`) so nothing downstream — masking, batching,
+the model itself — needed to change. This was a deliberate scope decision:
+fix the deprecated dependency, not rewrite a working training pipeline.

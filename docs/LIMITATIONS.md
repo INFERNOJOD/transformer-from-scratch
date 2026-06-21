@@ -50,6 +50,18 @@ byte-pair encoding (BPE) trained on the translation corpus itself. This is
 the most significant remaining gap between this repo and a fully
 from-scratch implementation — **planned as the next addition** (see below).
 
+### Data pipeline migrated off torchtext
+`torchtext` (originally used for dataset loading and vocabulary building,
+following the Annotated Transformer reference implementation) was deprecated
+by its maintainers in September 2023, with its final release (0.18.0)
+compatible only with PyTorch ≤2.3.0. Current Colab runtimes ship PyTorch
+2.4+, which torchtext does not support. `data_pipeline.py` replaces the
+three torchtext call sites (`datasets.Multi30k`, `build_vocab_from_iterator`,
+`to_map_style_dataset`) with HuggingFace `datasets` for loading and a
+minimal custom `Vocab` class matching torchtext's original interface — the
+rest of the training pipeline (`Batch`, masking, the model itself) is
+unchanged. Covered by 7 unit tests in `tests.py`.
+
 ### Encoder-decoder, not decoder-only
 The architecture follows the original 2017 paper's encoder-decoder design,
 which is well-suited to translation (a clear source→target mapping) but is
