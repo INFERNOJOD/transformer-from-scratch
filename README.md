@@ -2,7 +2,7 @@
 
 > From-scratch PyTorch reproduction of "Attention Is All You Need" extended with 10 modern improvements found in LLaMA, GPT-4, and production LLM inference systems.
 
-[![Tests](https://img.shields.io/badge/tests-32%2F32%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-39%2F39%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)]()
 [![PyTorch](https://img.shields.io/badge/pytorch-2.0%2B-orange)]()
 [![Paper](https://img.shields.io/badge/paper-arXiv%3A1706.03762-red)]()
