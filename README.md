@@ -60,8 +60,8 @@ A complete implementation of the Transformer architecture built from first princ
 
 ## Benchmarks
 
-> Run `python benchmark.py` on your hardware to reproduce these numbers.
-> Results below from Colab T4 GPU — replace with your own after training.
+> Results below were obtained after training the baseline Transformer on the Multi30k German→English dataset.
+> BLEU was computed using `evaluate.py` (beam search, k = 4), while latency and memory measurements were generated using `benchmark.py` on a Google Colab Tesla T4 GPU.
 
 ### Flash Attention vs Standard Attention
 
