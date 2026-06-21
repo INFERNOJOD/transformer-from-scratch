@@ -15,6 +15,14 @@
 
 ---
 
+## Highlights
+
+> - Built a Transformer from scratch in PyTorch (~9.36M parameters)
+> - Trained on Multi30k German→English translation
+> - Achieved **36.30 BLEU** (beam search, k=4)
+> - Final validation loss: **1.5462**
+> - 39 unit tests, benchmarking, attention visualization and profiling
+
 ## What This Is
 
 A complete implementation of the Transformer architecture built from first principles in PyTorch, then systematically extended with the components that power modern large language models.
