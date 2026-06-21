@@ -110,20 +110,19 @@ A complete implementation of the Transformer architecture built from first princ
 
 ---
 
-## Ablation Results
+## Experimental Summary
 
-> Run `python benchmark.py` after training to generate BLEU scores.
-> Populate this table from your Colab experiments.
-
-| Config | Val Loss | BLEU | Notes |
-|---|---|---|---|
-| Baseline (greedy) | — | — | Original paper components |
-| + Beam Search (k=4) | — | — | Expected ~+2 BLEU |
-| + RoPE | — | — | Relative position encoding |
-| + RMSNorm + SwiGLU | — | — | LLaMA-style components |
-| + Weight Tying | — | — | Paper §3.4 |
-| Paper base (WMT14) | — | 27.3 | Reference from paper |
-
+| Configuration | Validation Loss | BLEU | Status |
+|---|---:|---:|---|
+| Baseline (Greedy Decoding) | 1.5462 | — | Implemented |
+| Beam Search (k = 4) | 1.5462 | **36.30** | Completed |
+| Flash Attention Benchmark | — | — | Completed (Latency Benchmarks) |
+| KV Cache Benchmark | — | — | Completed (Inference Benchmarks) |
+| Mixed Precision (AMP) | — | — | Completed (Performance Benchmarks) |
+| RoPE Retraining | — | — | Planned |
+| RMSNorm + SwiGLU Retraining | — | — | Planned |
+| Weight Tying | Included | 36.30 | Included in baseline |
+| Vaswani et al. (2017) Base Model | — | 27.3 | Reference |
 ---
 
 ## Repository Structure
