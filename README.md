@@ -65,30 +65,38 @@ A complete implementation of the Transformer architecture built from first princ
 
 ### Flash Attention vs Standard Attention
 
-| Seq Length | Standard (ms) | Flash (ms) | Speedup |
-|---|---|---|---|
-| 128 | — | — | — |
-| 256 | — | — | — |
-| 512 | — | — | — |
-| 1024 | — | — | — |
+
+| Seq Length | Standard (ms) | Flash (ms) | Speedup | Memory Saved |
+|-----------:|--------------:|-----------:|---------:|-------------:|
+| 64 | 0.106 | 0.049 | **2.15×** | 0.5 MB |
+| 128 | 0.123 | 0.077 | **1.61×** | 2 MB |
+| 256 | 0.264 | 0.185 | **1.43×** | 8 MB |
+| 512 | 0.709 | 0.653 | **1.09×** | 32 MB |
+| 1024 | 2.652 | 2.224 | **1.19×** | 128 MB |
+
+*Measured on a Tesla T4 GPU (Google Colab).*
 
 *To populate: run `python benchmark.py --save` on Colab and paste output here.*
 
 ### KV Cache — Autoregressive Decoding
 
-| Decode Steps | No Cache (ms) | With Cache (ms) | Speedup |
-|---|---|---|---|
-| 20 | — | — | — |
-| 40 | — | — | — |
-| 80 | — | — | — |
+| Decode Steps | No Cache (ms) | KV Cache (ms) | Speedup |
+|-------------:|--------------:|--------------:|---------:|
+| 10 | 53.941 | 51.488 | **1.05×** |
+| 20 | 109.869 | 103.867 | **1.06×** |
+| 40 | 221.627 | 286.155 | 0.78× |
+| 80 | 439.281 | 433.341 | **1.01×** |
 
+*Measured on a Tesla T4 GPU (Google Colab).*
 ### Mixed Precision (FP32 vs AMP)
 
 | Batch Size | FP32 (ms) | AMP (ms) | Speedup |
-|---|---|---|---|
-| 8 | — | — | — |
-| 16 | — | — | — |
-| 32 | — | — | — |
+|-----------:|----------:|---------:|---------:|
+| 4 | 31.460 | 36.948 | 0.85× |
+| 8 | 31.656 | 37.783 | 0.84× |
+| 16 | 32.563 | 38.135 | 0.85× |
+
+*For this compact (~9.36M parameter) model on a Tesla T4, automatic mixed precision did not improve latency. This is expected for relatively small Transformer models where AMP overhead outweighs the computational savings.*
 
 ---
 
