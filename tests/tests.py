@@ -486,6 +486,78 @@ class TestFlashAttention(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────
+# Test Suite 10: Custom Data Pipeline (torchtext replacement)
+# ─────────────────────────────────────────────
+
+class TestDataPipelineVocab(unittest.TestCase):
+    """
+    Tests for data_pipeline.py's Vocab / build_vocab_from_iterator,
+    which replace torchtext.vocab after torchtext was deprecated
+    (last release 0.18.0, PyTorch <=2.3.0 only).
+
+    Note: load_multi30k() itself (the HuggingFace datasets network call)
+    is NOT covered here — it requires internet access and is verified
+    separately by actually running train.py end-to-end.
+    """
+
+    def test_vocab_basic_lookup(self):
+        from data_pipeline import build_vocab_from_iterator
+        sentences = [["a", "b", "c"], ["a", "b"], ["a"]]
+        vocab = build_vocab_from_iterator(sentences, min_freq=1)
+        self.assertIn("a", vocab.get_itos())
+        self.assertIn("b", vocab.get_itos())
+        self.assertIn("c", vocab.get_itos())
+
+    def test_min_freq_filtering(self):
+        """Tokens below min_freq should be excluded from the vocabulary."""
+        from data_pipeline import build_vocab_from_iterator
+        sentences = [["common", "common", "common"], ["rare"]]
+        vocab = build_vocab_from_iterator(sentences, min_freq=2)
+        self.assertIn("common", vocab.get_itos())
+        self.assertNotIn("rare", vocab.get_itos())
+
+    def test_specials_come_first(self):
+        """Special tokens should occupy the first N indices, in order."""
+        from data_pipeline import build_vocab_from_iterator
+        specials = ["<s>", "</s>", "<blank>", "<unk>"]
+        sentences = [["hello", "world"]]
+        vocab = build_vocab_from_iterator(sentences, min_freq=1, specials=specials)
+        for i, tok in enumerate(specials):
+            self.assertEqual(vocab[tok], i)
+
+    def test_default_index_for_oov(self):
+        """Out-of-vocabulary tokens should map to the default index, not error."""
+        from data_pipeline import build_vocab_from_iterator
+        vocab = build_vocab_from_iterator(
+            [["known"]], min_freq=1, specials=["<unk>"]
+        )
+        vocab.set_default_index(vocab["<unk>"])
+        self.assertEqual(vocab["never_seen_token"], vocab["<unk>"])
+
+    def test_callable_matches_indexing(self):
+        """vocab(['a','b']) should equal [vocab['a'], vocab['b']]."""
+        from data_pipeline import build_vocab_from_iterator
+        vocab = build_vocab_from_iterator([["a", "b", "c"]], min_freq=1)
+        ids = vocab(["a", "b", "c"])
+        self.assertEqual(ids, [vocab["a"], vocab["b"], vocab["c"]])
+
+    def test_len_matches_itos_length(self):
+        from data_pipeline import build_vocab_from_iterator
+        vocab = build_vocab_from_iterator(
+            [["x", "y", "z"]], min_freq=1, specials=["<s>"]
+        )
+        self.assertEqual(len(vocab), len(vocab.get_itos()))
+
+    def test_unknown_token_without_default_raises(self):
+        """Without set_default_index(), unknown tokens should raise KeyError
+        (matches torchtext's behavior of failing loudly rather than silently)."""
+        from data_pipeline import build_vocab_from_iterator
+        vocab = build_vocab_from_iterator([["known"]], min_freq=1)
+        with self.assertRaises(KeyError):
+            _ = vocab["totally_unseen"]
+
+
+# ─────────────────────────────────────────────
 # Run all tests
 # ─────────────────────────────────────────────
 
@@ -505,6 +577,7 @@ if __name__ == "__main__":
         TestBeamSearch,
         TestKVCache,
         TestFlashAttention,
+        TestDataPipelineVocab,
     ]
 
     for cls in test_classes:
