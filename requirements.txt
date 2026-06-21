@@ -1,8 +1,15 @@
-torch>=2.0
-torchtext
-numpy
-matplotlib
-spacy
-sacrebleu
-tqdm
-pyyaml
+# Core
+torch>=2.0.0
+datasets>=2.14.0
+
+# Tokenization
+spacy>=3.5.0
+
+# Evaluation
+sacrebleu>=2.3.0
+
+# Plotting
+matplotlib>=3.7.0
+
+# Utilities
+tqdm>=4.65.0
