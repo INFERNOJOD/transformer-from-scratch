@@ -215,6 +215,8 @@ def main():
     # Build the validation dataloader the same way train.py does
     from train import create_dataloaders, load_tokenizers
     spacy_de, spacy_en = load_tokenizers()
+    eval_cfg = cfg.copy()
+    eval_cfg["batch_size"] = 1
     _, val_loader = create_dataloaders(
         spacy_de, spacy_en, vocab_src, vocab_tgt, cfg, device
     )
