@@ -296,7 +296,7 @@ if __name__ == "__main__":
     import torch, spacy
     from model import make_model
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    ckpt = torch.load(args.checkpoint, map_location=device,weights_only=False)
     vocab_src = ckpt["vocab_src"]
     vocab_tgt = ckpt["vocab_tgt"]
     cfg = ckpt["config"]
