@@ -91,7 +91,7 @@ from the effect of model architecture.
 
 ---
 
-## Experiment 3 — + RoPE
+## Future Experiment 3 — + RoPE
 
 **Date:** _(fill in)_
 **Change:** Replace sinusoidal PE with RoPE. Retrain from scratch,
@@ -114,7 +114,7 @@ actually help here")_
 
 ---
 
-## Experiment 4 — + RMSNorm + SwiGLU
+## Future Experiment 4 — + RMSNorm + SwiGLU
 
 **Date:** _(fill in)_
 **Change:** Swap LayerNorm → RMSNorm, ReLU FFN → SwiGLU FFN.
@@ -128,7 +128,7 @@ Params:    ___  (SwiGLU uses 3 matrices vs FFN's 2 — note the difference)
 
 ---
 
-## Experiment 5 — + Weight Tying
+## Future Experiment 5 — + Weight Tying
 
 **Date:** _(fill in)_
 **Change:** Apply `apply_weight_tying()` after model creation.

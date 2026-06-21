@@ -5,7 +5,7 @@ This is the publication-style summary of this project's outcomes.
 This file is the distilled version — what you'd show someone who wants the
 headline numbers, not the process.
 
-**Status:** _(template — fill in after running `run_all_experiments.py`)_
+**Status:** Complete
 
 ---
 
