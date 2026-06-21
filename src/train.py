@@ -22,13 +22,11 @@ import spacy
 import matplotlib.pyplot as plt
 
 from torch.optim.lr_scheduler import LambdaLR
-from torchtext.data.functional import to_map_style_dataset
 from torch.utils.data import DataLoader
-from torchtext.vocab import build_vocab_from_iterator
-import torchtext.datasets as datasets
 from torch.nn.functional import pad
 
 from model import make_model, subsequent_mask
+from data_pipeline import load_multi30k, build_vocab_from_iterator
 
 
 # ─────────────────────────────────────────────
@@ -91,18 +89,20 @@ def build_vocab(spacy_de, spacy_en):
 
     SPECIALS = ["<s>", "</s>", "<blank>", "<unk>"]
 
+    # Load once, reuse for both vocabs (avoids downloading/parsing twice)
+    train, val, test = load_multi30k()
+    all_pairs = train + val + test
+
     print("Building German vocabulary...")
-    train, val, test = datasets.Multi30k(language_pair=("de", "en"))
     vocab_src = build_vocab_from_iterator(
-        (tok_de(pair[0]) for pair in (list(train) + list(val) + list(test))),
+        (tok_de(pair[0]) for pair in all_pairs),
         min_freq=2, specials=SPECIALS
     )
     vocab_src.set_default_index(vocab_src["<unk>"])
 
     print("Building English vocabulary...")
-    train, val, test = datasets.Multi30k(language_pair=("de", "en"))
     vocab_tgt = build_vocab_from_iterator(
-        (tok_en(pair[1]) for pair in (list(train) + list(val) + list(test))),
+        (tok_en(pair[1]) for pair in all_pairs),
         min_freq=2, specials=SPECIALS
     )
     vocab_tgt.set_default_index(vocab_tgt["<unk>"])
@@ -145,9 +145,10 @@ def create_dataloaders(spacy_de, spacy_en, vocab_src, vocab_tgt, config, device)
     fn = lambda b: collate_fn(b, tok_de, tok_en, vocab_src, vocab_tgt,
                               device, config["max_padding"], PAD_ID)
 
-    train_iter, val_iter, _ = datasets.Multi30k(language_pair=("de", "en"))
-    train_ds = to_map_style_dataset(train_iter)
-    val_ds = to_map_style_dataset(val_iter)
+    # load_multi30k() returns plain Python lists of (de, en) tuples —
+    # already "map-style" (indexable, has __len__), so no wrapper needed
+    # (this replaces torchtext's to_map_style_dataset() call)
+    train_ds, val_ds, _ = load_multi30k()
 
     train_loader = DataLoader(train_ds, batch_size=config["batch_size"],
                               shuffle=True, collate_fn=fn)
