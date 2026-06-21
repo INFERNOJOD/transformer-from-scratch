@@ -218,7 +218,7 @@ def main():
     eval_cfg = cfg.copy()
     eval_cfg["batch_size"] = 1
     _, val_loader = create_dataloaders(
-        spacy_de, spacy_en, vocab_src, vocab_tgt, cfg, device
+        spacy_de, spacy_en, vocab_src, vocab_tgt, eval_cfg, device
     )
 
     use_beam = args.beam > 0
