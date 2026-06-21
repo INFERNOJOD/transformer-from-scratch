@@ -173,3 +173,67 @@ def quick_bleu_check(model, val_loader, vocab_src, vocab_tgt, device,
         n_examples=n,
     )
     return result["bleu"]
+
+
+# ─────────────────────────────────────────────
+# CLI entry point
+# ─────────────────────────────────────────────
+
+def main():
+    import argparse
+    import torch
+    from model import make_model
+
+    parser = argparse.ArgumentParser(description="Evaluate BLEU for a trained checkpoint")
+    parser.add_argument("--checkpoint", default="checkpoints/epoch_08.pt",
+                        help="Path to a checkpoint saved by train.py "
+                             "(must contain model_state, vocab_src, vocab_tgt, config)")
+    parser.add_argument("--beam", type=int, default=4,
+                        help="Beam size for beam search decoding (0 = greedy)")
+    parser.add_argument("--n-examples", type=int, default=None,
+                        help="Limit evaluation to first N examples (omit for full val set)")
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Loading checkpoint: {args.checkpoint}")
+
+    # weights_only=False: checkpoint contains data_pipeline.Vocab objects,
+    # not just tensors — see train.py / inference.py for the same fix.
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    vocab_src = ckpt["vocab_src"]
+    vocab_tgt = ckpt["vocab_tgt"]
+    cfg = ckpt["config"]
+
+    model = make_model(
+        src_vocab_size=len(vocab_src), tgt_vocab_size=len(vocab_tgt),
+        N=cfg["N"], d_model=cfg["d_model"], d_ff=cfg["d_ff"],
+        h=cfg["h"], dropout=0.0,
+    ).to(device)
+    model.load_state_dict(ckpt["model_state"])
+    print(f"Loaded model from epoch {ckpt['epoch']} (val loss: {ckpt['val_loss']:.4f})\n")
+
+    # Build the validation dataloader the same way train.py does
+    from train import create_dataloaders, load_tokenizers
+    spacy_de, spacy_en = load_tokenizers()
+    _, val_loader = create_dataloaders(
+        spacy_de, spacy_en, vocab_src, vocab_tgt, cfg, device
+    )
+
+    use_beam = args.beam > 0
+    label = f"beam search (k={args.beam})" if use_beam else "greedy decoding"
+    print(f"Evaluating with {label}"
+         + (f", first {args.n_examples} examples" if args.n_examples else ", full validation set")
+         + "...\n")
+
+    result = evaluate_bleu(
+        model, val_loader, vocab_src, vocab_tgt, device,
+        beam_size=args.beam, use_beam=use_beam,
+        n_examples=args.n_examples,
+    )
+
+    print(f"\n>>> COPY THIS INTO RESULTS.md / EXPERIMENTS.md <<<")
+    print(f"BLEU ({label}): {result['bleu']:.2f}")
+
+
+if __name__ == "__main__":
+    main()
