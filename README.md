@@ -2,11 +2,11 @@
 
 > From-scratch PyTorch reproduction of "Attention Is All You Need" extended with 10 modern improvements found in LLaMA, GPT-4, and production LLM inference systems.
 
-[![Tests](https://img.shields.io/badge/tests-39%2F39%20passing-brightgreen)](tests/tests.py)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/pytorch-2.0%2B-orange)](https://pytorch.org/)
-[![Paper](https://img.shields.io/badge/paper-arXiv%3A1706.03762-red)](https://arxiv.org/abs/1706.03762)
-[![BLEU](https://img.shields.io/badge/BLEU-36.37-success)](docs/RESULTS.md)
+[![Tests](https://img.shields.io/badge/tests-39%2F39%20passing-brightgreen)]()
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue)]()
+[![PyTorch](https://img.shields.io/badge/pytorch-2.0%2B-orange)]()
+[![Paper](https://img.shields.io/badge/paper-arXiv%3A1706.03762-red)]()
+[![BLEU](https://img.shields.io/badge/BLEU-36.37-success)]()
 
 ---
 
@@ -165,46 +165,48 @@ reproduction, not a higher-quality model — see `RESULTS.md` and
 
 ## Repository Structure
 
-```text
-transformer-from-scratch/
-├── src/
-│   ├── model.py
-│   ├── train.py
-│   ├── inference.py
-│   ├── evaluate.py
-│   ├── visualize.py
-│   ├── benchmark.py
-│   ├── profile_model.py
-│   ├── beam_search.py
-│   ├── flash_attention.py
-│   ├── kv_cache.py
-│   ├── rope.py
-│   ├── modern_components.py
-│   ├── optimizations.py
-│   ├── data_pipeline.py
-│   ├── config.py
-│   └── run_all_experiments.py
-│
-├── docs/
-│   ├── RESULTS.md
-│   ├── EXPERIMENTS.md
-│   ├── DESIGN_DECISIONS.md
-│   └── LIMITATIONS.md
-│
-├── tests/
-│   └── tests.py              # 39 unit tests
-│
-├── assets/
-│   ├── architecture.png
-│   ├── attention_sample.png
-│   └── lr_schedule.png
-│
-├── attention_maps/           # Generated attention heatmaps
-├── checkpoints/              # Training checkpoints
-├── requirements.txt
-├── README.md
-└── LICENSE
 ```
+transformer/
+├── Core
+│   ├── model.py              # Transformer: attention, encoder, decoder, PE
+│   ├── train.py               # Training loop, warmup LR, label smoothing
+│   ├── inference.py           # Greedy decoding
+│   └── config.py              # Hyperparameter configs + ablation presets
+│
+├── Improvements
+│   ├── rope.py                # Rotary Positional Embeddings
+│   ├── beam_search.py         # Beam search + length penalty
+│   ├── kv_cache.py            # KV cache for O(n) inference
+│   ├── flash_attention.py     # Tiled + PyTorch Flash Attention
+│   ├── modern_components.py   # RMSNorm + SwiGLU FFN
+│   └── optimizations.py       # Mixed precision (AMP) + weight tying
+│
+├── Evaluation & Analysis
+│   ├── evaluate.py            # BLEU-4 with sacrebleu
+│   ├── visualize.py           # Attention heatmaps
+│   ├── benchmark.py           # Latency + memory benchmarks
+│   └── profile_model.py       # torch.profiler — per-layer time/memory
+│
+├── Orchestration
+│   └── run_all_experiments.py # One-shot Colab runner: train→eval→bench→profile
+│
+├── Documentation
+│   ├── README.md               # This file
+│   ├── RESULTS.md              # Publication-style summary of outcomes
+│   ├── EXPERIMENTS.md          # Lab notebook — every run, in order
+│   ├── DESIGN_DECISIONS.md     # Why every component exists
+│   └── LIMITATIONS.md          # Honest scope + roadmap
+│
+├── Assets
+│   ├── assets/architecture.png
+│   ├── assets/attention_sample.png
+│   └── assets/lr_schedule.png
+│
+└── Tests
+    └── tests/
+        └── tests.py            # 39 unit tests — 39/39 passing
+```
+
 ---
 
 ## Setup
@@ -220,7 +222,7 @@ python -m spacy download en_core_web_sm
 !pip install torch datasets spacy sacrebleu matplotlib tqdm
 !python -m spacy download de_core_news_sm
 !python -m spacy download en_core_web_sm
-%run src/train.py
+%run train.py
 ```
 
 ---
@@ -229,31 +231,31 @@ python -m spacy download en_core_web_sm
 
 ```bash
 # Train
-python src/train.py
+python train.py
 
 # Translate (greedy)
-python src/inference.py --sentence "Ein Hund läuft durch den Park."
+python inference.py --sentence "Ein Hund läuft durch den Park."
 
 # Translate (beam search, k=4)
-python src/inference.py --sentence "Ein Hund läuft durch den Park." --beam 4
+python inference.py --sentence "Ein Hund läuft durch den Park." --beam 4
 
 # Evaluate BLEU
-python src/evaluate.py --checkpoint checkpoints/epoch_08.pt
+python evaluate.py --checkpoint checkpoints/epoch_08.pt
 
 # Run benchmarks
-python src/benchmark.py --save
+python benchmark.py --save
 
 # Per-layer profiling (time + memory breakdown)
-python src/profile_model.py --seq-len 512 --batch 8
+python profile_model.py --seq-len 512 --batch 8
 
 # Attention visualization
-python src/visualize.py --sentence "Ein Hund läuft durch den Park."
+python visualize.py --sentence "Ein Hund läuft durch den Park."
 
 # Run everything in one shot (Colab-friendly)
-python src/run_all_experiments.py
+python run_all_experiments.py
 
 # Run tests
-python src/tests/tests.py
+python tests/tests.py
 ```
 
 **Further reading:**
