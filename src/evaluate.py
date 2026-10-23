@@ -191,7 +191,7 @@ def quick_bleu_check(model: nn.Module, val_loader: DataLoader,
 
 def main() -> None:
     import argparse
-    from model import make_model
+    from model import ablation_kwargs, make_model
 
     parser = argparse.ArgumentParser(description="Evaluate BLEU for a trained checkpoint")
     parser.add_argument("--checkpoint", default="checkpoints/epoch_08.pt",
@@ -216,7 +216,7 @@ def main() -> None:
     model = make_model(
         src_vocab_size=len(vocab_src), tgt_vocab_size=len(vocab_tgt),
         N=cfg["N"], d_model=cfg["d_model"], d_ff=cfg["d_ff"],
-        h=cfg["h"], dropout=0.0,
+        h=cfg["h"], dropout=0.0, **ablation_kwargs(cfg),
     ).to(device)
     model.load_state_dict(ckpt["model_state"])
     print(f"Loaded model from epoch {ckpt['epoch']} (val loss: {ckpt['val_loss']:.4f})\n")

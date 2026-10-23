@@ -16,7 +16,7 @@ import torch
 
 from beam_search import translate_beam
 from data_pipeline import Vocab
-from model import EncoderDecoder, make_model, subsequent_mask
+from model import EncoderDecoder, ablation_kwargs, make_model, subsequent_mask
 
 
 # ─────────────────────────────────────────────
@@ -110,6 +110,7 @@ def load_model(checkpoint_path: str,
         d_ff=cfg["d_ff"],
         h=cfg["h"],
         dropout=0.0,   # no dropout at inference
+        **ablation_kwargs(cfg),
     ).to(device)
 
     model.load_state_dict(ckpt["model_state"])

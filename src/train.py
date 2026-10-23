@@ -8,14 +8,17 @@ Colab free tier friendly:
   - Plots training loss curve at the end
 
 Run (from the repository root):
-    python src/train.py
+    python src/train.py                       # baseline (reported results)
+    python src/train.py --use-rope            # one ablation
+    python src/train.py --use-rmsnorm --use-swiglu --tie-weights
 or in Colab:
     %run src/train.py
 """
 
+import argparse
 import os
 import time
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -26,7 +29,8 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.nn.functional import pad
 
-from model import EncoderDecoder, make_model, subsequent_mask
+from model import (ABLATION_FLAGS, EncoderDecoder, ablation_kwargs,
+                   make_model, subsequent_mask)
 from data_pipeline import Vocab, load_multi30k, build_vocab_from_iterator
 
 
@@ -41,6 +45,12 @@ CONFIG = {
     "d_ff": 512,
     "h": 4,
     "dropout": 0.1,
+
+    # Architecture ablations (see make_model) — all False = reported baseline
+    "use_rope": False,
+    "use_rmsnorm": False,
+    "use_swiglu": False,
+    "tie_weights": False,
 
     "batch_size": 128,
     "num_epochs": 8,
@@ -321,6 +331,7 @@ def train() -> Tuple[EncoderDecoder, Vocab, Vocab]:
         d_ff=CONFIG["d_ff"],
         h=CONFIG["h"],
         dropout=CONFIG["dropout"],
+        **ablation_kwargs(CONFIG),
     ).to(DEVICE)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -405,5 +416,18 @@ def train() -> Tuple[EncoderDecoder, Vocab, Vocab]:
     return model, vocab_src, vocab_tgt
 
 
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """CLI flags that override CONFIG; omitted flags keep the baseline."""
+    parser = argparse.ArgumentParser(description="Train the Transformer on Multi30k")
+    for flag in ABLATION_FLAGS:
+        parser.add_argument(f"--{flag.replace('_', '-')}", dest=flag,
+                            action="store_true",
+                            help=f"enable {flag} (default: off)")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    args = parse_args()
+    for flag in ABLATION_FLAGS:
+        CONFIG[flag] = CONFIG[flag] or getattr(args, flag)
     train()

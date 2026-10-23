@@ -56,11 +56,30 @@ Figure 1 — Full Architecture:
 
 import math
 import copy
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from modern_components import RMSNorm, SwiGLUFeedForward
+from optimizations import apply_weight_tying
+from rope import RoPEMultiHeadAttention
+
+# Architecture toggles accepted by make_model(); all False = paper baseline.
+ABLATION_FLAGS = ("use_rope", "use_rmsnorm", "use_swiglu", "tie_weights")
+
+# A norm factory: called with the feature size, returns a norm module.
+NormFactory = Callable[[int], nn.Module]
+
+
+def ablation_kwargs(config: Dict) -> Dict[str, bool]:
+    """
+    Pull make_model()'s architecture flags out of a saved config dict.
+    Missing keys default to False, so checkpoints saved before these flags
+    existed rebuild as the baseline model.
+    """
+    return {flag: bool(config.get(flag, False)) for flag in ABLATION_FLAGS}
 
 
 # ─────────────────────────────────────────────
@@ -228,9 +247,10 @@ class SublayerConnection(nn.Module):
     Annotated Transformer.
     """
 
-    def __init__(self, size: int, dropout: float):
+    def __init__(self, size: int, dropout: float,
+                 norm_cls: NormFactory = LayerNorm):
         super().__init__()
-        self.norm = LayerNorm(size)
+        self.norm = norm_cls(size)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor,
@@ -247,13 +267,15 @@ class EncoderLayer(nn.Module):
     One encoder layer = Self-Attention → FFN, each wrapped in Add&Norm.
     """
 
-    def __init__(self, size: int, self_attn: MultiHeadAttention,
-                 feed_forward: PositionwiseFeedForward, dropout: float):
+    def __init__(self, size: int, self_attn: nn.Module,
+                 feed_forward: nn.Module, dropout: float,
+                 norm_cls: NormFactory = LayerNorm):
         super().__init__()
         self.self_attn = self_attn
         self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        self.sublayer = clones(SublayerConnection(size, dropout, norm_cls), 2)
         self.size = size
+        self.norm_cls = norm_cls
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
@@ -266,7 +288,7 @@ class Encoder(nn.Module):
     def __init__(self, layer: EncoderLayer, N: int):
         super().__init__()
         self.layers = clones(layer, N)
-        self.norm = LayerNorm(layer.size)
+        self.norm = layer.norm_cls(layer.size)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
@@ -284,15 +306,16 @@ class DecoderLayer(nn.Module):
     Each sub-layer wrapped in Add&Norm.
     """
 
-    def __init__(self, size: int, self_attn: MultiHeadAttention,
-                 cross_attn: MultiHeadAttention,
-                 feed_forward: PositionwiseFeedForward, dropout: float):
+    def __init__(self, size: int, self_attn: nn.Module,
+                 cross_attn: nn.Module, feed_forward: nn.Module,
+                 dropout: float, norm_cls: NormFactory = LayerNorm):
         super().__init__()
         self.self_attn = self_attn
         self.cross_attn = cross_attn
         self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 3)
+        self.sublayer = clones(SublayerConnection(size, dropout, norm_cls), 3)
         self.size = size
+        self.norm_cls = norm_cls
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor,
                 src_mask: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
@@ -310,7 +333,7 @@ class Decoder(nn.Module):
     def __init__(self, layer: DecoderLayer, N: int):
         super().__init__()
         self.layers = clones(layer, N)
-        self.norm = LayerNorm(layer.size)
+        self.norm = layer.norm_cls(layer.size)
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor,
                 src_mask: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
@@ -428,21 +451,50 @@ def make_model(
     d_ff: int = 2048,    # inner FFN dimension
     h: int = 8,          # attention heads
     dropout: float = 0.1,
+    use_rope: bool = False,     # RoPE self-attention instead of sinusoidal PE
+    use_rmsnorm: bool = False,  # RMSNorm instead of LayerNorm
+    use_swiglu: bool = False,   # SwiGLU FFN instead of ReLU FFN
+    tie_weights: bool = False,  # share tgt embedding with generator projection
 ) -> EncoderDecoder:
     """
     Construct a Transformer from hyperparameters.
     Colab-friendly small model (train.py): N=3, d_model=256, d_ff=512, h=4
     Full paper base model:                 N=6, d_model=512, d_ff=2048, h=8
+
+    With every flag False (the default) this builds exactly the baseline
+    model used for the reported results. The flags swap in the modules
+    from rope.py, modern_components.py and optimizations.py:
+
+      use_rope     Encoder and decoder self-attention use
+                   RoPEMultiHeadAttention and the sinusoidal positional
+                   encoding is dropped (embeddings keep their dropout).
+                   Cross-attention stays position-free: queries and keys
+                   come from different sequences, so a relative rotation
+                   between them has no meaning.
+      use_rmsnorm  Every LayerNorm (sublayers + final encoder/decoder
+                   norms) becomes RMSNorm.
+      use_swiglu   PositionwiseFeedForward becomes SwiGLUFeedForward with
+                   the same d_ff (3 bias-free matrices, so more parameters
+                   than the 2-matrix ReLU FFN at equal d_ff).
+      tie_weights  Generator projection shares the target embedding matrix
+                   (paper §3.4). Source and target vocabularies are
+                   separate, so the source embedding is not tied.
     """
     c = copy.deepcopy
     attn = MultiHeadAttention(h, d_model, dropout)
-    ff = PositionwiseFeedForward(d_model, d_ff, dropout)
-    pos_enc = PositionalEncoding(d_model, dropout)
+    self_attn = (RoPEMultiHeadAttention(h, d_model, dropout, max_seq_len=5000)
+                 if use_rope else attn)
+    ff = (SwiGLUFeedForward(d_model, d_ff, dropout) if use_swiglu
+          else PositionwiseFeedForward(d_model, d_ff, dropout))
+    pos_enc = nn.Dropout(dropout) if use_rope else PositionalEncoding(d_model, dropout)
+    norm_cls = RMSNorm if use_rmsnorm else LayerNorm
 
     model = EncoderDecoder(
-        encoder=Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
+        encoder=Encoder(
+            EncoderLayer(d_model, c(self_attn), c(ff), dropout, norm_cls), N
+        ),
         decoder=Decoder(
-            DecoderLayer(d_model, c(attn), c(attn), c(ff), dropout), N
+            DecoderLayer(d_model, c(self_attn), c(attn), c(ff), dropout, norm_cls), N
         ),
         src_embed=nn.Sequential(Embeddings(d_model, src_vocab_size), c(pos_enc)),
         tgt_embed=nn.Sequential(Embeddings(d_model, tgt_vocab_size), c(pos_enc)),
@@ -453,5 +505,8 @@ def make_model(
     for p in model.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
+
+    if tie_weights:
+        apply_weight_tying(model)
 
     return model

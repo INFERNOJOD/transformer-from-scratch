@@ -36,12 +36,13 @@ class ModelConfig:
     h: int = 4                  # number of attention heads
     dropout: float = 0.1        # dropout rate
 
-    # Modern component toggles
+    # Modern component toggles — all False reproduces the baseline model.
+    # The first four are passed to make_model() via model_kwargs().
     use_rope: bool = False           # RoPE instead of sinusoidal PE
     use_rmsnorm: bool = False        # RMSNorm instead of LayerNorm
     use_swiglu: bool = False         # SwiGLU FFN instead of ReLU FFN
-    use_flash_attention: bool = False  # Flash Attention backend
-    tie_weights: bool = True         # tie embedding ↔ generator weights
+    tie_weights: bool = False        # tie tgt embedding ↔ generator weights
+    use_flash_attention: bool = False  # Flash Attention backend (not yet wired into make_model)
 
     @classmethod
     def small(cls) -> "ModelConfig":
@@ -67,9 +68,12 @@ class ModelConfig:
         return cls(N=6, d_model=1024, d_ff=4096, h=16, dropout=0.3)
 
     def model_kwargs(self) -> dict:
-        """Returns kwargs for make_model() — excludes toggle flags."""
+        """Returns kwargs for make_model() (everything except vocab sizes
+        and use_flash_attention, which make_model does not support)."""
         return dict(N=self.N, d_model=self.d_model,
-                    d_ff=self.d_ff, h=self.h, dropout=self.dropout)
+                    d_ff=self.d_ff, h=self.h, dropout=self.dropout,
+                    use_rope=self.use_rope, use_rmsnorm=self.use_rmsnorm,
+                    use_swiglu=self.use_swiglu, tie_weights=self.tie_weights)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -191,7 +195,8 @@ class ExperimentConfig:
             f"Experiment: {self.name}",
             f"  Model:  N={m.N}, d_model={m.d_model}, h={m.h}, d_ff={m.d_ff}",
             f"  Extras: rope={m.use_rope}, rmsnorm={m.use_rmsnorm}, "
-            f"swiglu={m.use_swiglu}, flash={m.use_flash_attention}",
+            f"swiglu={m.use_swiglu}, tied={m.tie_weights}, "
+            f"flash={m.use_flash_attention}",
             f"  Train:  epochs={t.num_epochs}, batch={t.batch_size}, "
             f"warmup={t.warmup_steps}, amp={t.use_amp}",
         ]
@@ -224,6 +229,11 @@ ABLATION_CONFIGS = {
         model=ModelConfig(N=3, d_model=256, d_ff=512, h=4, use_swiglu=True),
         name="with_swiglu",
         notes="SwiGLU FFN instead of ReLU FFN",
+    ),
+    "with_weight_tying": ExperimentConfig(
+        model=ModelConfig(N=3, d_model=256, d_ff=512, h=4, tie_weights=True),
+        name="with_weight_tying",
+        notes="Target embedding shared with generator projection",
     ),
     "llama_style": ExperimentConfig(
         model=ModelConfig.base_modern(),

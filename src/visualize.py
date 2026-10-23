@@ -287,7 +287,7 @@ if __name__ == "__main__":
     import argparse
 
     import spacy
-    from model import make_model
+    from model import ablation_kwargs, make_model
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default="checkpoints/epoch_08.pt")
@@ -304,7 +304,8 @@ if __name__ == "__main__":
 
     model = make_model(len(vocab_src), len(vocab_tgt),
                        N=cfg["N"], d_model=cfg["d_model"],
-                       d_ff=cfg["d_ff"], h=cfg["h"], dropout=0.0).to(device)
+                       d_ff=cfg["d_ff"], h=cfg["h"], dropout=0.0,
+                       **ablation_kwargs(cfg)).to(device)
     model.load_state_dict(ckpt["model_state"])
 
     try:

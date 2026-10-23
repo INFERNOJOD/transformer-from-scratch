@@ -559,6 +559,139 @@ class TestDataPipelineVocab(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────
+# Test Suite 11: Ablation flags (make_model / train.py)
+# ─────────────────────────────────────────────
+
+class TestAblationFlags(unittest.TestCase):
+    """Each make_model() flag builds a working model; defaults = baseline."""
+
+    V, N, D = 50, 2, 64
+
+    def build(self, **flags):
+        from model import make_model
+        torch.manual_seed(0)
+        return make_model(self.V, self.V, N=self.N, d_model=self.D,
+                          d_ff=128, h=4, dropout=0.0, **flags)
+
+    def forward(self, model, src=None):
+        from model import subsequent_mask
+        torch.manual_seed(1)
+        if src is None:
+            src = torch.randint(3, self.V, (2, 7))
+        tgt = torch.randint(3, self.V, (2, 5))
+        src_mask = (src != 2).unsqueeze(-2)
+        tgt_mask = (tgt != 2).unsqueeze(-2) & subsequent_mask(5)
+        out = model(src, tgt, src_mask, tgt_mask)
+        return model.generator(out)
+
+    def assert_forward_ok(self, model):
+        logits = self.forward(model)
+        self.assertEqual(logits.shape, (2, 5, self.V))
+        self.assertTrue(torch.isfinite(logits).all())
+
+    def modules_of(self, model, cls):
+        return [m for m in model.modules() if isinstance(m, cls)]
+
+    def test_defaults_build_the_baseline(self):
+        from model import (LayerNorm, MultiHeadAttention, PositionalEncoding,
+                           PositionwiseFeedForward, make_model)
+        from modern_components import RMSNorm, SwiGLUFeedForward
+        from rope import RoPEMultiHeadAttention
+        model = make_model(100, 100, N=2, d_model=64, d_ff=128, h=4)
+        # Parameter count pinned from the pre-flag implementation
+        self.assertEqual(sum(p.numel() for p in model.parameters()), 186980)
+        self.assertEqual(len(model.state_dict()), 94)
+        self.assertEqual(len(self.modules_of(model, PositionalEncoding)), 2)
+        self.assertEqual(len(self.modules_of(model, MultiHeadAttention)), 6)
+        self.assertEqual(len(self.modules_of(model, PositionwiseFeedForward)), 4)
+        self.assertEqual(len(self.modules_of(model, LayerNorm)), 12)
+        for cls in (RMSNorm, SwiGLUFeedForward, RoPEMultiHeadAttention):
+            self.assertEqual(self.modules_of(model, cls), [])
+        self.assertIsNot(model.generator.proj.weight, model.tgt_embed[0].lut.weight)
+
+    def test_explicit_false_flags_match_defaults_exactly(self):
+        base = self.build()
+        flagged = self.build(use_rope=False, use_rmsnorm=False,
+                             use_swiglu=False, tie_weights=False)
+        sd_a, sd_b = base.state_dict(), flagged.state_dict()
+        self.assertEqual(sd_a.keys(), sd_b.keys())
+        for k in sd_a:
+            self.assertTrue(torch.equal(sd_a[k], sd_b[k]), k)
+
+    def test_use_rope(self):
+        from model import MultiHeadAttention, PositionalEncoding
+        from rope import RoPEMultiHeadAttention
+        model = self.build(use_rope=True)
+        self.assertEqual(self.modules_of(model, PositionalEncoding), [])
+        for layer in list(model.encoder.layers) + list(model.decoder.layers):
+            self.assertIsInstance(layer.self_attn, RoPEMultiHeadAttention)
+        for layer in model.decoder.layers:
+            self.assertIs(type(layer.cross_attn), MultiHeadAttention)
+        self.assert_forward_ok(model)
+
+    def test_rope_model_still_sees_token_order(self):
+        """With sinusoidal PE removed, RoPE must be the source of position info:
+        reversing the source must change the output."""
+        model = self.build(use_rope=True).eval()
+        src = torch.arange(3, 10).unsqueeze(0).repeat(2, 1)
+        out_fwd = self.forward(model, src)
+        out_rev = self.forward(model, src.flip(-1))
+        self.assertFalse(torch.allclose(out_fwd, out_rev, atol=1e-5))
+
+    def test_use_rmsnorm(self):
+        from model import LayerNorm
+        from modern_components import RMSNorm
+        model = self.build(use_rmsnorm=True)
+        self.assertEqual(self.modules_of(model, LayerNorm), [])
+        # 2 per encoder layer + 3 per decoder layer + 2 final norms
+        self.assertEqual(len(self.modules_of(model, RMSNorm)), 5 * self.N + 2)
+        self.assert_forward_ok(model)
+
+    def test_use_swiglu(self):
+        from model import PositionwiseFeedForward
+        from modern_components import SwiGLUFeedForward
+        model = self.build(use_swiglu=True)
+        self.assertEqual(self.modules_of(model, PositionwiseFeedForward), [])
+        for layer in list(model.encoder.layers) + list(model.decoder.layers):
+            self.assertIsInstance(layer.feed_forward, SwiGLUFeedForward)
+        self.assert_forward_ok(model)
+
+    def test_tie_weights(self):
+        from optimizations import count_parameters
+        model = self.build(tie_weights=True)
+        self.assertIs(model.generator.proj.weight, model.tgt_embed[0].lut.weight)
+        self.assertEqual(count_parameters(self.build()) - count_parameters(model),
+                         self.V * self.D)
+        self.assert_forward_ok(model)
+
+    def test_all_flags_together_train(self):
+        model = self.build(use_rope=True, use_rmsnorm=True,
+                           use_swiglu=True, tie_weights=True)
+        self.forward(model).mean().backward()
+        grads = [p.grad for p in model.parameters()]
+        self.assertTrue(all(g is not None and torch.isfinite(g).all() for g in grads))
+
+    def test_ablation_kwargs_defaults_old_checkpoints_to_baseline(self):
+        from model import ablation_kwargs
+        old_cfg = {"N": 3, "d_model": 256, "d_ff": 512, "h": 4}
+        self.assertEqual(ablation_kwargs(old_cfg),
+                         {"use_rope": False, "use_rmsnorm": False,
+                          "use_swiglu": False, "tie_weights": False})
+        self.assertTrue(ablation_kwargs({"use_rope": True})["use_rope"])
+
+    def test_model_config_kwargs_build_model(self):
+        from config import ABLATION_CONFIGS, ModelConfig
+        from model import make_model
+        self.assertFalse(any(ModelConfig.small().model_kwargs()[f]
+                             for f in ("use_rope", "use_rmsnorm",
+                                       "use_swiglu", "tie_weights")))
+        for name in ("with_rope", "with_rmsnorm", "with_swiglu", "with_weight_tying"):
+            kwargs = ABLATION_CONFIGS[name].model.model_kwargs()
+            kwargs.update(N=1, d_model=32, d_ff=64)   # keep the test fast
+            self.assert_forward_ok(make_model(self.V, self.V, **kwargs).eval())
+
+
+# ─────────────────────────────────────────────
 # Run all tests
 # ─────────────────────────────────────────────
 
@@ -579,6 +712,7 @@ if __name__ == "__main__":
         TestKVCache,
         TestFlashAttention,
         TestDataPipelineVocab,
+        TestAblationFlags,
     ]
 
     for cls in test_classes:
