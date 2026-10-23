@@ -1,5 +1,5 @@
 """
-config.py — Centralized Configuration System
+config.py — Centralized Configuration
 
 Replaces scattered magic numbers with named, documented configs.
 Supports multiple presets (base, small, large) and easy overrides.
@@ -13,11 +13,9 @@ Benefits:
   - All hyperparameters in one place
   - Easy to reproduce experiments (save config with checkpoint)
   - Easy to run ablations (change one param, re-run)
-  - Looks like a real engineering project
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional
 import json
 import os
 
@@ -76,7 +74,7 @@ class ModelConfig:
     def to_dict(self) -> dict:
         return asdict(self)
 
-    def save(self, path: str):
+    def save(self, path: str) -> None:
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
         print(f"Config saved to {path}")
@@ -139,7 +137,7 @@ class TrainConfig:
         d["language_pair"] = list(d["language_pair"])
         return d
 
-    def save(self, path: str):
+    def save(self, path: str) -> None:
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
@@ -162,7 +160,7 @@ class ExperimentConfig:
     name: str = "experiment"
     notes: str = ""
 
-    def save(self, path: str):
+    def save(self, path: str) -> None:
         d = {
             "name": self.name,
             "notes": self.notes,

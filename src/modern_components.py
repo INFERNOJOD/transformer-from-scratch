@@ -28,9 +28,8 @@ WHY RMSNorm:
   - Used in: LLaMA 1/2/3, Mistral, Gemma, PaLM 2, Qwen
   - The bias term in LayerNorm is largely redundant (the FFN already has biases)
 
-Interview question: "What's the difference between LayerNorm and RMSNorm?"
-Answer: RMSNorm drops the mean subtraction and bias term, keeping only
-RMS scaling. It's faster and works just as well empirically.
+In short: RMSNorm drops the mean subtraction and bias term, keeping only
+RMS scaling. It's cheaper and works just as well empirically.
 
 
 IMPROVEMENT 2: SwiGLU FFN
@@ -56,16 +55,16 @@ WHY SwiGLU:
 Note: SwiGLU uses 3 weight matrices instead of 2, so d_ff is usually
 set to 2/3 × original d_ff to keep parameter count equal.
 
-Interview question: "What's the difference between the original FFN and SwiGLU?"
-Answer: SwiGLU replaces the ReLU with a gating mechanism — one linear
+In short: SwiGLU replaces the ReLU with a gating mechanism — one linear
 projection gates another element-wise, allowing the network to selectively
 suppress or pass through features. It uses Swish as the activation, which
 is smoother than ReLU.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 # ─────────────────────────────────────────────
@@ -107,8 +106,7 @@ def swish(x: torch.Tensor) -> torch.Tensor:
     Smooth, non-monotonic, slightly negative for x < 0.
     Also known as SiLU (Sigmoid Linear Unit) — same function.
     """
-    return x * torch.sigmoid(x)
-    # Equivalently: return F.silu(x)
+    return x * torch.sigmoid(x)   # equivalent to torch.nn.functional.silu
 
 
 class SwiGLUFeedForward(nn.Module):
@@ -130,7 +128,8 @@ class SwiGLUFeedForward(nn.Module):
     but we accept any d_ff for flexibility.
     """
 
-    def __init__(self, d_model: int, d_ff: int = None, dropout: float = 0.1):
+    def __init__(self, d_model: int, d_ff: Optional[int] = None,
+                 dropout: float = 0.1):
         super().__init__()
         if d_ff is None:
             # 8/3 × d_model keeps param count ≈ original FFN with 4× expansion
@@ -175,7 +174,7 @@ class LLaMAStyleEncoderLayer(nn.Module):
     """
 
     def __init__(self, d_model: int, attn_module: nn.Module,
-                 d_ff: int = None, dropout: float = 0.1):
+                 d_ff: Optional[int] = None, dropout: float = 0.1):
         super().__init__()
         self.attn = attn_module
         self.ffn = SwiGLUFeedForward(d_model, d_ff, dropout)
@@ -183,7 +182,8 @@ class LLaMAStyleEncoderLayer(nn.Module):
         self.norm2 = RMSNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor,
+                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         # Pre-norm self-attention with residual
         h = self.norm1(x)
         x = x + self.dropout(self.attn(h, h, h, mask))

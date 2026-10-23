@@ -5,8 +5,8 @@ produced by running `train.py` / `evaluate.py` / `benchmark.py` on real hardware
 and pasting the real output — no invented numbers.
 
 **Workflow for each entry:**
-1. Run `python train.py` with the config noted below
-2. Run `python evaluate.py --checkpoint <path>` for BLEU
+1. Run `python src/train.py` (from the repo root) with the config noted below
+2. Run `python src/evaluate.py --checkpoint <path>` for BLEU
 3. Paste the actual printed output into this file
 4. Note what changed vs the previous experiment and why
 

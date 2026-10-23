@@ -1,6 +1,10 @@
 """
 evaluate.py — BLEU Score Evaluation
 
+Usage (from the repository root):
+    python src/evaluate.py --checkpoint checkpoints/epoch_08.pt
+    python src/evaluate.py --checkpoint checkpoints/epoch_08.pt --beam 0   # greedy
+
 WHY BLEU, NOT LOSS
 --------------------
 Validation loss measures how surprised the model is at the next token.
@@ -29,30 +33,35 @@ Example:
        ≈ 0  (any zero n-gram kills the score — log(0) = -inf)
 
 In practice on the full test set, the zeros smooth out.
-The paper's base model achieves 27.3 BLEU on WMT14 En-De.
-This Multi30k implementation typically achieves ~25-30 BLEU.
+The paper's base model achieves 27.3 BLEU on WMT14 En-De; see RESULTS.md
+for this repository's measured Multi30k score and why the two differ.
 
 sacrebleu is the standard library — it handles tokenization and normalization
 consistently so different papers can be fairly compared.
 """
 
-import torch
+from typing import Dict, List, Optional
+
 import sacrebleu
-from typing import List
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+from data_pipeline import Vocab
 
 
 def evaluate_bleu(
-    model,
-    data_loader,
-    vocab_src,
-    vocab_tgt,
-    device,
+    model: nn.Module,
+    data_loader: DataLoader,
+    vocab_src: Vocab,
+    vocab_tgt: Vocab,
+    device: torch.device,
     beam_size: int = 4,
     max_len: int = 72,
     use_beam: bool = True,
-    n_examples: int = None,
-) -> dict:
+    n_examples: Optional[int] = None,
+) -> Dict:
     """
     Compute BLEU score on a dataset split.
 
@@ -161,7 +170,8 @@ def evaluate_bleu(
     return result
 
 
-def quick_bleu_check(model, val_loader, vocab_src, vocab_tgt, device,
+def quick_bleu_check(model: nn.Module, val_loader: DataLoader,
+                     vocab_src: Vocab, vocab_tgt: Vocab, device: torch.device,
                      n: int = 200) -> float:
     """
     Fast BLEU estimate on n examples — useful during training to track progress
@@ -179,9 +189,8 @@ def quick_bleu_check(model, val_loader, vocab_src, vocab_tgt, device,
 # CLI entry point
 # ─────────────────────────────────────────────
 
-def main():
+def main() -> None:
     import argparse
-    import torch
     from model import make_model
 
     parser = argparse.ArgumentParser(description="Evaluate BLEU for a trained checkpoint")
@@ -233,8 +242,7 @@ def main():
         n_examples=args.n_examples,
     )
 
-    print(f"\n>>> COPY THIS INTO RESULTS.md / EXPERIMENTS.md <<<")
-    print(f"BLEU ({label}): {result['bleu']:.2f}")
+    print(f"\nBLEU ({label}): {result['bleu']:.2f}")
 
 
 if __name__ == "__main__":

@@ -13,14 +13,15 @@ WHY IT WORKS:
   - The embedding matrix maps token_id → vector  (vocab_size × d_model)
   - The generator's linear layer maps vector → token_id  (d_model × vocab_size)
   - These are approximate transposes of each other
-  - Sharing weights reduces parameters significantly:
-      Without tying: 2 × vocab_size × d_model  extra params
-      With tying:    0 extra params (same matrix reused)
+  - Sharing removes one full vocab_size × d_model matrix from the model
   - Also acts as regularization — the model can't learn contradictory
     representations in embedding vs output projection
 
-IMPLEMENTATION: one line of code, huge conceptual insight.
+IMPLEMENTATION: a single assignment.
     model.generator.proj.weight = model.tgt_embed[0].lut.weight
+
+Only the target embedding is tied: source and target use separate
+vocabularies here, so the source embedding has a different shape.
 
 
 IMPROVEMENT 2: MIXED PRECISION (AMP)
@@ -45,13 +46,14 @@ In practice: ~1.5-2× training speedup, same final model quality.
 import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import LRScheduler
 
 
 # ─────────────────────────────────────────────
 # Weight Tying
 # ─────────────────────────────────────────────
 
-def apply_weight_tying(model) -> None:
+def apply_weight_tying(model: nn.Module) -> None:
     """
     Tie the target embedding weights to the generator projection weights.
 
@@ -72,10 +74,10 @@ def apply_weight_tying(model) -> None:
 
     n_tied = model.generator.proj.weight.numel()
     print(f"Weight tying applied — {n_tied:,} parameters shared "
-          f"(src_embed, tgt_embed, and generator projection)")
+          f"(tgt_embed and generator projection)")
 
 
-def count_parameters(model) -> int:
+def count_parameters(model: nn.Module) -> int:
     """Count unique trainable parameters (accounts for weight tying)."""
     # Using a set of ids to avoid double-counting shared tensors
     seen = set()
@@ -100,8 +102,9 @@ class AMPTrainer:
         loss = trainer.step(batch, criterion)
     """
 
-    def __init__(self, model, optimizer, scheduler,
-                 accum_iter: int = 4, clip_grad: float = 1.0):
+    def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer,
+                 scheduler: LRScheduler, accum_iter: int = 4,
+                 clip_grad: float = 1.0):
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -113,7 +116,7 @@ class AMPTrainer:
         self.scaler = GradScaler(enabled=torch.cuda.is_available())
         self._step_count = 0
 
-    def step(self, batch, criterion) -> float:
+    def step(self, batch, criterion: nn.Module) -> float:
         """
         Run one training step with AMP.
 

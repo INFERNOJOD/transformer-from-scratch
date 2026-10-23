@@ -29,25 +29,31 @@ Result:
   - Speed: 2-4× faster on A100 GPUs
   - Enables much longer context windows
 
-This is why GPT-4, Claude, LLaMA 2+ all use Flash Attention.
+This is why Flash Attention is the default in modern LLM training and inference.
 
 IMPLEMENTATION APPROACH
 -------------------------
 A true from-scratch Flash Attention requires CUDA kernels.
 We implement three levels here:
 
-1. FlashAttentionV1   — Pure PyTorch tiled implementation (educational)
-2. FlashAttentionV2   — Uses torch.nn.functional.scaled_dot_product_attention
-                        (which calls CUDA Flash Attention if available)
-3. FlashMultiHeadAttn — Drop-in replacement for MultiHeadAttention
+1. flash_attention_tiled   — Pure PyTorch tiled implementation (educational)
+2. flash_attention_pytorch — Uses torch.nn.functional.scaled_dot_product_attention
+                             (which calls CUDA Flash Attention if available)
+3. FlashMultiHeadAttention — Drop-in replacement for MultiHeadAttention
 
-In production, always use level 2 (PyTorch's built-in).
-Level 1 is here so you can explain the algorithm in interviews.
+In production, use level 2 (PyTorch's built-in).
+Level 1 exists to make the online-softmax algorithm readable.
+
+Usage (from the repository root):
+    python src/flash_attention.py          # quick CPU timing comparison
 """
+
+import math
+import time
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
-import math
 
 
 # ─────────────────────────────────────────────
@@ -60,7 +66,7 @@ def flash_attention_tiled(
     K: torch.Tensor,
     V: torch.Tensor,
     block_size: int = 64,
-    mask: torch.Tensor = None,
+    mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Tiled attention: processes Q, K, V in blocks to reduce peak memory.
@@ -140,7 +146,7 @@ def flash_attention_pytorch(
     Q: torch.Tensor,
     K: torch.Tensor,
     V: torch.Tensor,
-    mask: torch.Tensor = None,
+    mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
 ) -> torch.Tensor:
     """
@@ -179,7 +185,7 @@ class FlashMultiHeadAttention(nn.Module):
     Drop-in replacement for the original MultiHeadAttention.
 
     On GPU with PyTorch >= 2.0: uses CUDA Flash Attention automatically.
-    On CPU: falls back to standard (tiled) attention.
+    On CPU: PyTorch dispatches to its math (non-fused) backend.
     """
 
     def __init__(self, h: int, d_model: int, dropout: float = 0.1,
@@ -202,7 +208,8 @@ class FlashMultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor,
-                value: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+                value: torch.Tensor,
+                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         B = query.size(0)
 
         def reshape(x, proj):
@@ -225,13 +232,12 @@ class FlashMultiHeadAttention(nn.Module):
 
 
 def benchmark_attention(seq_len: int = 512, d_model: int = 256,
-                        h: int = 4, batch: int = 8, device: str = "cpu"):
+                        h: int = 4, batch: int = 8,
+                        device: str = "cpu") -> Dict[str, float]:
     """
-    Compare standard attention vs Flash Attention on speed and memory.
-    Run this to generate benchmark numbers for your README.
+    Compare standard, tiled and PyTorch Flash Attention latency.
+    For the full benchmark suite see benchmark.py.
     """
-    import time
-
     d_k = d_model // h
     Q = torch.randn(batch, h, seq_len, d_k, device=device)
     K = torch.randn(batch, h, seq_len, d_k, device=device)

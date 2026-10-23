@@ -18,8 +18,7 @@ With KV cache: compute K,V for ONE new token per step, reuse the rest.
   Step 3: compute K,V for [t_2] only, concat with cached → same result
   Total work: O(n) — linear. Massive speedup for long sequences.
 
-This is why KV caching is critical for production LLM inference.
-GPT, Claude, Gemini all use this.
+This is why KV caching is standard in production LLM inference.
 
 MEMORY TRADEOFF
 ----------------
@@ -31,11 +30,11 @@ grouped-query attention (GQA) and multi-query attention (MQA)
 that reduce the number of K,V heads vs Q heads.
 """
 
+import math
+from typing import Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
-import math
-from typing import Optional, Tuple, Dict
-import copy
 
 
 class KVCache:
@@ -74,10 +73,10 @@ class KVCache:
 
         return self._cache[layer_id]
 
-    def clear(self):
+    def clear(self) -> None:
         self._cache.clear()
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._cache)
 
 
@@ -147,9 +146,10 @@ class CachedMultiHeadAttention(nn.Module):
         return self.out_proj(out)
 
 
-def greedy_decode_cached(model, src: torch.Tensor, src_mask: torch.Tensor,
-                         max_len: int, start_symbol: int, end_symbol: int,
-                         device) -> torch.Tensor:
+def greedy_decode_cached(model: nn.Module, src: torch.Tensor,
+                         src_mask: torch.Tensor, max_len: int,
+                         start_symbol: int, end_symbol: int,
+                         device: torch.device) -> torch.Tensor:
     """
     Greedy decode with KV cache.
 

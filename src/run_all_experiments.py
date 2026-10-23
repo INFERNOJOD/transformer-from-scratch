@@ -1,38 +1,38 @@
 """
 run_all_experiments.py — One-Shot Colab Runner
 
-Runs the full Tier-1 pipeline in sequence so you can fill in EXPERIMENTS.md
-in one Colab session instead of running scripts one at a time:
+Runs the full pipeline in sequence so every result can be produced in one
+Colab session instead of running scripts one at a time:
 
     1. Train the baseline model           → train.py
     2. Evaluate BLEU (greedy + beam)       → evaluate.py
     3. Run latency/memory benchmarks       → benchmark.py
     4. Generate attention heatmaps         → visualize.py
+    5. Profile training steps              → profile_model.py
 
-Usage (Colab):
-    !python run_all_experiments.py
+Usage (from the repository root, or in Colab with a leading "!"):
+    python src/run_all_experiments.py
 
 Everything prints to console — copy the relevant blocks straight into
 EXPERIMENTS.md. Nothing here is invented; if a step fails, it stops and
 tells you exactly what to fix rather than silently skipping.
 """
 
-import os
-import sys
 import time
+
 import torch
 
 
 SEPARATOR = "=" * 70
 
 
-def section(title: str):
+def section(title: str) -> None:
     print(f"\n{SEPARATOR}")
     print(f"  {title}")
     print(SEPARATOR)
 
 
-def main():
+def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Running on: {device}")
     if device == "cpu":
@@ -81,8 +81,7 @@ def main():
     section("STEP 3 / 5 — Latency & memory benchmarks")
 
     import benchmark
-    print_system_info_fn = benchmark.print_system_info
-    print_system_info_fn(device)
+    benchmark.print_system_info(device)
 
     seq_lengths = [128, 256, 512, 1024] if device == "cuda" else [64, 128, 256]
     decode_lengths = [20, 40, 80]
@@ -141,25 +140,19 @@ def main():
                     h=CONFIG["h"], n_steps=10, device=device)
     except Exception as e:
         print(f"Profiling failed: {e}")
-        print("(Non-fatal — run `python profile_model.py` separately if needed)")
+        print("(Non-fatal — run `python src/profile_model.py` separately if needed)")
 
     # ── Done ──────────────────────────────────────────────────────
     total_time = time.time() - total_start
     section(f"ALL DONE in {total_time/60:.1f} minutes")
 
     print("""
-Next steps:
-  1. Open EXPERIMENTS.md and fill in Experiment 1 with the BLEU numbers above
-  2. Open RESULTS.md and fill in the publication-style summary
-  3. Open README.md and replace the placeholder benchmark tables with the
-     real numbers printed in Step 3 (also saved in benchmark_results.json)
-  4. Replace assets/attention_sample.png with a real heatmap from
-     attention_maps/ (generated in Step 4)
-  5. Check profiler_summary.txt and profiler_trace.json (Step 5) — open
-     the trace at https://ui.perfetto.dev for a visual timeline
-  6. Commit everything: checkpoints excluded (.gitignore), but assets/,
-     EXPERIMENTS.md, RESULTS.md, and benchmark_results.json should all
-     be pushed
+Outputs:
+  - checkpoints/epoch_*.pt, transformer_final.pt, training_loss_curve.png
+  - benchmark_results.json                (Step 3)
+  - attention_maps/*.png                  (Step 4)
+  - profiler_summary.txt, profiler_trace.json — open the trace at
+    https://ui.perfetto.dev for a visual timeline (Step 5)
 """)
 
 

@@ -7,15 +7,16 @@ Colab free tier friendly:
   - Saves checkpoints every epoch
   - Plots training loss curve at the end
 
-Run:
-    python train.py
+Run (from the repository root):
+    python src/train.py
 or in Colab:
-    %run train.py
+    %run src/train.py
 """
 
 import os
-import math
 import time
+from typing import Callable, Dict, List, Tuple
+
 import torch
 import torch.nn as nn
 import spacy
@@ -25,8 +26,8 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.nn.functional import pad
 
-from model import make_model, subsequent_mask
-from data_pipeline import load_multi30k, build_vocab_from_iterator
+from model import EncoderDecoder, make_model, subsequent_mask
+from data_pipeline import Vocab, load_multi30k, build_vocab_from_iterator
 
 
 # ─────────────────────────────────────────────
@@ -59,7 +60,7 @@ print(f"Using device: {DEVICE}")
 # Tokenisation & Vocabulary
 # ─────────────────────────────────────────────
 
-def load_tokenizers():
+def load_tokenizers() -> Tuple["spacy.language.Language", "spacy.language.Language"]:
     """Load spaCy models (downloads if needed)."""
     try:
         spacy_de = spacy.load("de_core_news_sm")
@@ -74,11 +75,13 @@ def load_tokenizers():
     return spacy_de, spacy_en
 
 
-def tokenize(text, tokenizer):
+def tokenize(text: str, tokenizer: "spacy.language.Language") -> List[str]:
+    """Split text into token strings using a spaCy pipeline's tokenizer."""
     return [tok.text for tok in tokenizer.tokenizer(text)]
 
 
-def build_vocab(spacy_de, spacy_en):
+def build_vocab(spacy_de: "spacy.language.Language",
+                spacy_en: "spacy.language.Language") -> Tuple[Vocab, Vocab]:
     """Build source (De) and target (En) vocabularies from Multi30k."""
     if os.path.exists("vocab.pt"):
         print("Loading cached vocab...")
@@ -116,8 +119,13 @@ def build_vocab(spacy_de, spacy_en):
 # Data Loading
 # ─────────────────────────────────────────────
 
-def collate_fn(batch, src_pipeline, tgt_pipeline, src_vocab, tgt_vocab,
-               device, max_padding=72, pad_id=2):
+def collate_fn(batch: List[Tuple[str, str]],
+               src_pipeline: Callable[[str], List[str]],
+               tgt_pipeline: Callable[[str], List[str]],
+               src_vocab: Vocab, tgt_vocab: Vocab,
+               device: torch.device, max_padding: int = 72,
+               pad_id: int = 2) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Tokenize, numericalize, add BOS/EOS and pad a batch of (src, tgt) pairs."""
     BOS = torch.tensor([0], device=device)
     EOS = torch.tensor([1], device=device)
     src_list, tgt_list = [], []
@@ -137,7 +145,11 @@ def collate_fn(batch, src_pipeline, tgt_pipeline, src_vocab, tgt_vocab,
     return torch.stack(src_list), torch.stack(tgt_list)
 
 
-def create_dataloaders(spacy_de, spacy_en, vocab_src, vocab_tgt, config, device):
+def create_dataloaders(spacy_de: "spacy.language.Language",
+                       spacy_en: "spacy.language.Language",
+                       vocab_src: Vocab, vocab_tgt: Vocab, config: Dict,
+                       device: torch.device) -> Tuple[DataLoader, DataLoader]:
+    """Build the Multi30k train and validation DataLoaders."""
     tok_de = lambda t: tokenize(t, spacy_de)
     tok_en = lambda t: tokenize(t, spacy_en)
     PAD_ID = vocab_src["<blank>"]
@@ -164,7 +176,7 @@ def create_dataloaders(spacy_de, spacy_en, vocab_src, vocab_tgt, config, device)
 class Batch:
     """Holds a training batch with pre-computed masks."""
 
-    def __init__(self, src, tgt, pad_idx=2):
+    def __init__(self, src: torch.Tensor, tgt: torch.Tensor, pad_idx: int = 2):
         self.src = src
         self.src_mask = (src != pad_idx).unsqueeze(-2)   # (B, 1, src_len)
 
@@ -231,8 +243,11 @@ def lr_lambda(step: int, d_model: int, warmup: int) -> float:
 # Training Loop
 # ─────────────────────────────────────────────
 
-def run_epoch(data_loader, model, criterion, optimizer, scheduler,
-              pad_idx, device, mode="train", accum_iter=1):
+def run_epoch(data_loader: DataLoader, model: EncoderDecoder,
+              criterion: nn.Module, optimizer: torch.optim.Optimizer,
+              scheduler: LambdaLR, pad_idx: int, device: torch.device,
+              mode: str = "train", accum_iter: int = 1) -> float:
+    """Run one pass over data_loader; returns the mean loss per token."""
     model.train() if mode == "train" else model.eval()
 
     total_loss = 0.0
@@ -284,7 +299,8 @@ def run_epoch(data_loader, model, criterion, optimizer, scheduler,
 # Main Training Script
 # ─────────────────────────────────────────────
 
-def train():
+def train() -> Tuple[EncoderDecoder, Vocab, Vocab]:
+    """Train on Multi30k using CONFIG; returns (model, vocab_src, vocab_tgt)."""
     os.makedirs(CONFIG["checkpoint_dir"], exist_ok=True)
 
     # Data

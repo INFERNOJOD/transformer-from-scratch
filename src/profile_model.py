@@ -2,12 +2,11 @@
 profile_model.py — torch.profiler Integration
 
 Unlike benchmark.py (which times whole operations end-to-end), this gives a
-per-layer breakdown of where time and memory actually go — the kind of
-output that looks like real systems engineering, not just a stopwatch.
+per-operator breakdown of where time and memory actually go.
 
-Usage:
-    python profile_model.py
-    python profile_model.py --seq-len 512 --batch 8
+Usage (from the repository root):
+    python src/profile_model.py
+    python src/profile_model.py --seq-len 512 --batch 8
 
 Outputs:
     - Printed table: top operations by CPU/CUDA time
@@ -24,6 +23,8 @@ This is the difference between knowing something is slow and knowing why.
 """
 
 import argparse
+from typing import Optional
+
 import torch
 import torch.profiler as profiler
 
@@ -38,8 +39,9 @@ def run_profiler(
     d_ff: int = 512,
     h: int = 4,
     n_steps: int = 10,
-    device: str = None,
-):
+    device: Optional[str] = None,
+) -> profiler.profile:
+    """Profile n_steps training steps of a randomly initialised model."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Profiling on: {device.upper()}")
     print(f"Config: seq_len={seq_len}, batch={batch_size}, "
@@ -141,7 +143,7 @@ def run_profiler(
     return prof
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Profile the Transformer model")
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--batch", type=int, default=8)

@@ -4,7 +4,7 @@ rope.py — Rotary Positional Embeddings (RoPE)
 Paper: "RoFormer: Enhanced Transformer with Rotary Position Embedding"
        Su et al., 2021 — https://arxiv.org/abs/2104.09864
 
-Used in: LLaMA, GPT-NeoX, PaLM, Mistral, Gemma — basically every modern LLM.
+Used in: LLaMA, GPT-NeoX, PaLM, Mistral, Gemma.
 
 WHY RoPE IS BETTER THAN SINUSOIDAL PE
 --------------------------------------
@@ -17,7 +17,8 @@ RoPE:
   - Encodes position by ROTATING the Q and K vectors before dot product
   - The dot product Q·K naturally becomes a function of (position_i - position_j)
   - Relative position is EXPLICIT in the attention score
-  - Works better for long sequences and generalizes beyond training length
+  - Nothing is added to the token embeddings — position only affects
+    the Q·K scores, leaving V (the content path) untouched
 
 HOW IT WORKS (the key insight)
 --------------------------------
@@ -34,13 +35,16 @@ The magic: when you compute q_m · k_n (dot product in attention),
 the result depends only on (m - n) — the RELATIVE position.
 """
 
+import math
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-import math
 
 
 def precompute_rope_freqs(d_k: int, max_seq_len: int, base: float = 10000.0,
-                          device=None) -> tuple:
+                          device: Optional[torch.device] = None
+                          ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Precompute cos and sin tables for RoPE.
 
@@ -107,7 +111,6 @@ class RoPEMultiHeadAttention(nn.Module):
         self.d_k = d_model // h
         self.h = h
 
-        import copy
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
@@ -121,7 +124,7 @@ class RoPEMultiHeadAttention(nn.Module):
         self.register_buffer("sin_cached", sin)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
-                mask: torch.Tensor = None) -> torch.Tensor:
+                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         B = query.size(0)
 
         # Project → (B, heads, seq, d_k)

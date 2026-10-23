@@ -8,9 +8,15 @@
 [![Paper](https://img.shields.io/badge/paper-arXiv%3A1706.03762-red)]()
 [![BLEU](https://img.shields.io/badge/BLEU-36.37-success)]()
 
----
+A complete encoder-decoder Transformer built from first principles in
+PyTorch, trained on German → English translation (Multi30k), then
+systematically extended with the components that power modern large
+language models — RoPE, RMSNorm, SwiGLU, Flash Attention, KV caching and
+more. Every number in this README is a real measurement.
 
-## Architecture
+**Base paper:** "Attention Is All You Need", Vaswani et al., NeurIPS 2017  
+**Task:** German → English translation (Multi30k)  
+**Extensions:** 10 improvements covering modern LLM architecture, inference optimization, and training efficiency
 
 ![Transformer Architecture](assets/architecture.png)
 
@@ -31,57 +37,98 @@ fresh repository clone:
 | Epochs | 8 |
 | Tests | 39/39 passing |
 
+- BLEU verified on a fresh clone over the full validation set (1,014 examples)
+- 39 unit tests covering attention, RoPE, Flash Attention, KV Cache, weight tying, and the custom data pipeline
+- End-to-end benchmarking, attention visualization, and PyTorch profiling — all with real measured numbers
+
 Full results, sample translations, and failure analysis: [`RESULTS.md`](RESULTS.md)
 
 ---
 
-## Highlights
+## Quickstart
 
-> - Built a Transformer from scratch in PyTorch (9,358,576 parameters)
-> - Trained on Multi30k German→English translation
-> - Achieved **36.37 BLEU** (beam search, k=4) — verified on a fresh clone, full validation set (1,014 examples)
-> - Final validation loss: **1.5295**
-> - 39 unit tests covering attention, RoPE, Flash Attention, KV Cache, weight tying, and the custom data pipeline
-> - End-to-end benchmarking, attention visualization, and PyTorch profiling — all with real measured numbers
+All commands are run from the repository root.
 
-## What This Is
+```bash
+# Install
+pip install -r requirements.txt
+python -m spacy download de_core_news_sm
+python -m spacy download en_core_web_sm
 
-A complete implementation of the Transformer architecture built from first principles in PyTorch, then systematically extended with the components that power modern large language models.
+# Train (writes checkpoints/epoch_XX.pt)
+python src/train.py
 
-**Base paper:** "Attention Is All You Need", Vaswani et al., NeurIPS 2017  
-**Task:** German → English translation (Multi30k)  
-**Extensions:** 10 improvements covering modern LLM architecture, inference optimization, and training efficiency
+# Translate (greedy, or beam search with --beam)
+python src/inference.py --sentence "Ein Hund läuft durch den Park."
+python src/inference.py --sentence "Ein Hund läuft durch den Park." --beam 4
+
+# Evaluate BLEU on the validation set
+python src/evaluate.py --checkpoint checkpoints/epoch_08.pt
+
+# Run the unit tests
+python tests/tests.py
+```
+
+More tools:
+
+```bash
+python src/benchmark.py --save                       # latency + memory benchmarks
+python src/profile_model.py --seq-len 512 --batch 8  # per-op time/memory breakdown
+python src/visualize.py --sentence "Ein Hund läuft durch den Park."  # attention heatmaps
+python src/run_all_experiments.py                    # train → eval → bench → visualize → profile
+```
+
+**Google Colab:**
+```python
+!git clone https://github.com/INFERNOJOD/transformer-from-scratch.git
+%cd transformer-from-scratch
+!pip install torch datasets spacy sacrebleu matplotlib tqdm
+!python -m spacy download de_core_news_sm
+!python -m spacy download en_core_web_sm
+%run src/train.py
+```
 
 ---
 
-## Extensions Beyond the Paper
+## Features
+
+### Extensions Beyond the Paper
 
 | # | Improvement | File | Used In |
 |---|---|---|---|
-| 1 | **Rotary Positional Embeddings (RoPE)** | `rope.py` | LLaMA, Mistral, Gemma, GPT-NeoX |
-| 2 | **Beam Search + Length Penalty** | `beam_search.py` | All production MT systems |
-| 3 | **KV Cache** | `kv_cache.py` | GPT-4, Claude, every production LLM |
-| 4 | **Flash Attention** | `flash_attention.py` | LLaMA 2+, GPT-4, Mistral |
-| 5 | **RMSNorm** | `modern_components.py` | LLaMA, Gemma, PaLM 2 |
-| 6 | **SwiGLU FFN** | `modern_components.py` | LLaMA, PaLM, Gemma |
-| 7 | **Mixed Precision Training (AMP)** | `optimizations.py` | All modern training pipelines |
-| 8 | **Weight Tying** | `optimizations.py` | GPT-2, paper §3.4 |
-| 9 | **BLEU-4 Evaluation** | `evaluate.py` | Standard MT metric |
-| 10 | **Attention Visualization** | `visualize.py` | Interpretability |
+| 1 | **Rotary Positional Embeddings (RoPE)** | `src/rope.py` | LLaMA, Mistral, Gemma, GPT-NeoX |
+| 2 | **Beam Search + Length Penalty** | `src/beam_search.py` | All production MT systems |
+| 3 | **KV Cache** | `src/kv_cache.py` | GPT-4, Claude, every production LLM |
+| 4 | **Flash Attention** | `src/flash_attention.py` | LLaMA 2+, GPT-4, Mistral |
+| 5 | **RMSNorm** | `src/modern_components.py` | LLaMA, Gemma, PaLM 2 |
+| 6 | **SwiGLU FFN** | `src/modern_components.py` | LLaMA, PaLM, Gemma |
+| 7 | **Mixed Precision Training (AMP)** | `src/optimizations.py` | All modern training pipelines |
+| 8 | **Weight Tying** | `src/optimizations.py` | GPT-2, paper §3.4 |
+| 9 | **BLEU-4 Evaluation** | `src/evaluate.py` | Standard MT metric |
+| 10 | **Attention Visualization** | `src/visualize.py` | Interpretability |
 
----
+### Key Design Decisions
 
-## Attention Visualization
+| Question | Answer |
+|---|---|
+| Why scale attention by √d_k? | Large d_k → dot products grow large → softmax saturates → vanishing gradients |
+| Why RoPE over sinusoidal PE? | Relative position is explicit in Q·K; better generalisation to longer sequences |
+| Why beam search over greedy? | Avoids locally-optimal but globally-bad choices; typically +1–3 BLEU |
+| Why KV cache? | Without it, decoding is O(n²); cache makes it O(n) by reusing past K,V |
+| Why Flash Attention? | Never materialises the O(seq²) attention matrix; 2–4× faster, less memory |
+| Why RMSNorm over LayerNorm? | No mean subtraction, no bias; ~10% faster, same quality |
+| Why SwiGLU over ReLU FFN? | Gating selectively passes features; consistently ~+1 perplexity |
+| Why weight tying? | Embedding and un-embedding are approximate inverses; fewer parameters |
+| Why mixed precision? | FP16 halves memory; Tensor Cores give 2–4× compute on GPU |
+| Why label smoothing? | Prevents overconfidence; improves BLEU even at slight perplexity cost |
 
-![Attention Heatmap](assets/attention_sample.png)
-
-*Representative attention visualization generated by `visualize.py`. Different heads learn complementary local, global and syntactic attention patterns.*
+The full reasoning for every component is in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md).
 
 ---
 
 ## Benchmarks
 
-Measured on Colab T4, PyTorch 2.11.0+cu128 — real output from `benchmark.py --save`.
+Measured on Colab T4, PyTorch 2.11.0+cu128 — real output from `src/benchmark.py --save`.
 Two independent runs were performed; numbers below are from the first
 complete run (saved in `benchmark_results.json`). A second run showed the
 same overall pattern with normal run-to-run timing variance — see
@@ -133,14 +180,6 @@ on a T4 — see `RESULTS.md` for the full explanation.
 
 ---
 
-## LR Schedule
-
-![LR Schedule](assets/lr_schedule.png)
-
-*Warmup learning rate schedule from Equation 3 of the paper. Linearly increases for `warmup_steps`, then decays as 1/√step.*
-
----
-
 ## Ablation Results
 
 > Trained and verified on Colab T4 — these are real measured numbers.
@@ -163,6 +202,22 @@ reproduction, not a higher-quality model — see `RESULTS.md` and
 
 ---
 
+## Visualizations
+
+### Attention
+
+![Attention Heatmap](assets/attention_sample.png)
+
+*Attention maps are generated by `src/visualize.py`; [`attention_maps/`](attention_maps/) holds the real outputs from the trained model, one grid of heads per encoder/decoder attention layer.*
+
+### LR Schedule
+
+![LR Schedule](assets/lr_schedule.png)
+
+*Warmup learning rate schedule from Equation 3 of the paper. Linearly increases for `warmup_steps`, then decays as 1/√step.*
+
+---
+
 ## Repository Structure
 
 ```
@@ -171,7 +226,7 @@ transformer-from-scratch/
 │   ├── model.py               # Transformer: attention, encoder, decoder, PE
 │   ├── train.py               # Training loop, warmup LR, label smoothing
 │   ├── data_pipeline.py       # Multi30k loading + vocab (replaces deprecated torchtext)
-│   ├── inference.py           # Greedy decoding
+│   ├── inference.py           # Greedy / beam search translation CLI
 │   ├── config.py              # Hyperparameter configs + ablation presets
 │   ├── rope.py                # Rotary Positional Embeddings
 │   ├── beam_search.py         # Beam search + length penalty
@@ -203,63 +258,6 @@ transformer-from-scratch/
 
 ---
 
-## Setup
-
-```bash
-pip install -r requirements.txt
-python -m spacy download de_core_news_sm
-python -m spacy download en_core_web_sm
-```
-
-**Google Colab:**
-```python
-!pip install torch datasets spacy sacrebleu matplotlib tqdm
-!python -m spacy download de_core_news_sm
-!python -m spacy download en_core_web_sm
-%run train.py
-```
-
----
-
-## Usage
-
-```bash
-# Train
-python src/train.py
-
-# Translate (greedy)
-python src/inference.py --sentence "Ein Hund läuft durch den Park."
-
-# Translate (beam search, k=4)
-python src/inference.py --sentence "Ein Hund läuft durch den Park." --beam 4
-
-# Evaluate BLEU
-python src/evaluate.py --checkpoint checkpoints/epoch_08.pt
-
-# Run benchmarks
-python src/benchmark.py --save
-
-# Per-layer profiling (time + memory breakdown)
-python src/profile_model.py --seq-len 512 --batch 8
-
-# Attention visualization
-python src/visualize.py --sentence "Ein Hund läuft durch den Park."
-
-# Run everything in one shot (Colab-friendly)
-python src/run_all_experiments.py
-
-# Run tests
-python tests/tests.py
-```
-
-**Further reading:**
-- [`RESULTS.md`](RESULTS.md) — final numbers, translation examples, failure analysis
-- [`EXPERIMENTS.md`](EXPERIMENTS.md) — full experiment log, one entry per run
-- [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) — why every component exists
-- [`LIMITATIONS.md`](LIMITATIONS.md) — honest scope and what's next
-
----
-
 ## Tests
 
 ```
@@ -283,20 +281,14 @@ ALL TESTS PASSED ✓
 
 ---
 
-## Key Design Decisions
+## Documentation
 
-| Question | Answer |
+| Document | Contents |
 |---|---|
-| Why scale attention by √d_k? | Large d_k → dot products grow large → softmax saturates → vanishing gradients |
-| Why RoPE over sinusoidal PE? | Relative position is explicit in Q·K; better generalisation to longer sequences |
-| Why beam search over greedy? | Avoids locally-optimal but globally-bad choices; typically +1–3 BLEU |
-| Why KV cache? | Without it, decoding is O(n²); cache makes it O(n) by reusing past K,V |
-| Why Flash Attention? | Never materialises the O(seq²) attention matrix; 2–4× faster, less memory |
-| Why RMSNorm over LayerNorm? | No mean subtraction, no bias; ~10% faster, same quality |
-| Why SwiGLU over ReLU FFN? | Gating selectively passes features; consistently ~+1 perplexity |
-| Why weight tying? | Embedding and un-embedding are approximate inverses; fewer parameters |
-| Why mixed precision? | FP16 halves memory; Tensor Cores give 2–4× compute on GPU |
-| Why label smoothing? | Prevents overconfidence; improves BLEU even at slight perplexity cost |
+| [`RESULTS.md`](RESULTS.md) | Final numbers, translation examples, failure analysis |
+| [`EXPERIMENTS.md`](EXPERIMENTS.md) | Full experiment log, one entry per run |
+| [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) | Why every component exists |
+| [`LIMITATIONS.md`](LIMITATIONS.md) | Honest scope and what's next |
 
 ---
 

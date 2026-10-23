@@ -21,18 +21,23 @@ With beam_size=4, it explores 4 parallel hypotheses and returns the best.
 LENGTH PENALTY
 --------------
 Without it, beam search prefers short translations (fewer terms to multiply).
-The paper uses: score = log_prob / length^α, where α=0.6
+Hypotheses are ranked by the GNMT length penalty (Wu et al., 2016), with
+α=0.6 as in the paper:
 
-INTERVIEW QUESTION: "Why divide by length^α and not just length?"
-Because log-probs are negative, dividing by a larger number (length)
-makes the score less negative, which would incorrectly favor longer sequences.
-The power α tunes how much you penalize/reward length.
+    score = log_prob / ((5 + length) / 6)^α
+
+Why length^α and not just length? Log-probs are negative, so dividing by
+the full length would over-correct and favour long outputs; α in [0, 1]
+tunes how strongly length is normalised.
 """
+
+from dataclasses import dataclass
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
-from dataclasses import dataclass, field
-from typing import List, Optional
+
+from data_pipeline import Vocab
 
 
 @dataclass
@@ -48,7 +53,7 @@ class BeamHypothesis:
 
 
 def beam_search(
-    model,
+    model: nn.Module,
     src: torch.Tensor,
     src_mask: torch.Tensor,
     max_len: int,
@@ -57,7 +62,7 @@ def beam_search(
     pad_symbol: int,
     beam_size: int = 4,
     length_penalty: float = 0.6,
-    device: torch.device = None,
+    device: Optional[torch.device] = None,
 ) -> List[int]:
     """
     Beam search decoder.
@@ -148,11 +153,11 @@ def beam_search(
         return best.token_ids[1:]   # strip BOS
 
 
-def translate_beam(sentence: str, model, vocab_src, vocab_tgt, spacy_de,
-                   device, beam_size: int = 4, max_len: int = 72) -> str:
+def translate_beam(sentence: str, model: nn.Module, vocab_src: Vocab,
+                   vocab_tgt: Vocab, spacy_de: "spacy.language.Language",
+                   device: torch.device, beam_size: int = 4,
+                   max_len: int = 72) -> str:
     """Convenience wrapper: string → beam search → string."""
-    from model import subsequent_mask
-
     model.eval()
     tokens = [tok.text for tok in spacy_de.tokenizer(sentence)]
     BOS, EOS = vocab_src["<s>"], vocab_src["</s>"]

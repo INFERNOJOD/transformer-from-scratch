@@ -24,10 +24,8 @@ The `Vocab` class below intentionally mimics torchtext's Vocab interface
 don't need to change at all.
 """
 
-import os
-import torch
 from collections import Counter
-from typing import List, Callable, Iterable
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 # ─────────────────────────────────────────────
@@ -46,12 +44,12 @@ class Vocab:
         len(vocab)                                       (vocab size)
     """
 
-    def __init__(self, stoi: dict, itos: List[str]):
+    def __init__(self, stoi: Dict[str, int], itos: List[str]):
         self._stoi = stoi
         self._itos = itos
         self._default_index = None
 
-    def set_default_index(self, index: int):
+    def set_default_index(self, index: int) -> None:
         self._default_index = index
 
     def __getitem__(self, token: str) -> int:
@@ -71,14 +69,14 @@ class Vocab:
     def get_itos(self) -> List[str]:
         return self._itos
 
-    def get_stoi(self) -> dict:
+    def get_stoi(self) -> Dict[str, int]:
         return self._stoi
 
 
 def build_vocab_from_iterator(
     token_iterator: Iterable[List[str]],
     min_freq: int = 1,
-    specials: List[str] = None,
+    specials: Optional[List[str]] = None,
 ) -> Vocab:
     """
     Build a Vocab from an iterator of tokenized sentences.
@@ -111,7 +109,7 @@ def build_vocab_from_iterator(
 # Dataset loading — replaces torchtext.datasets.Multi30k
 # ─────────────────────────────────────────────
 
-def load_multi30k():
+def load_multi30k() -> Tuple[List[Tuple[str, str]], ...]:
     """
     Load Multi30k German-English translation pairs via HuggingFace `datasets`.
 
@@ -129,7 +127,7 @@ def load_multi30k():
     print("Loading Multi30k from HuggingFace datasets...")
     ds = load_dataset("bentrevett/multi30k")
 
-    def to_pairs(split) -> List[tuple]:
+    def to_pairs(split) -> List[Tuple[str, str]]:
         # bentrevett/multi30k rows are {"en": ..., "de": ...}
         # torchtext's Multi30k(language_pair=("de","en")) yields (de, en)
         return [(row["de"], row["en"]) for row in split]

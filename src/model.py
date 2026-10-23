@@ -1,7 +1,8 @@
 """
-Transformer model implementation based on:
-"Attention Is All You Need" (Vaswani et al., 2017)
-https://arxiv.org/abs/1706.03762
+model.py — Transformer Encoder-Decoder
+
+Paper: "Attention Is All You Need" — Vaswani et al., 2017
+       https://arxiv.org/abs/1706.03762
 
 Figure 1 — Full Architecture:
 
@@ -55,6 +56,8 @@ Figure 1 — Full Architecture:
 
 import math
 import copy
+from typing import Callable, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -86,9 +89,9 @@ def scaled_dot_product_attention(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    mask: torch.Tensor = None,
-    dropout: nn.Dropout = None,
-):
+    mask: Optional[torch.Tensor] = None,
+    dropout: Optional[nn.Dropout] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) * V
 
@@ -149,7 +152,7 @@ class MultiHeadAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        mask: torch.Tensor = None,
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         batch_size = query.size(0)
 
@@ -217,11 +220,12 @@ class LayerNorm(nn.Module):
 
 class SublayerConnection(nn.Module):
     """
-    Residual connection + layer norm:
-        output = LayerNorm(x + Sublayer(x))
+    Residual connection + layer norm (pre-norm):
+        output = x + Dropout(Sublayer(LayerNorm(x)))
 
-    Note: norm is applied *before* the sublayer (pre-norm variant used
-    here for training stability, following the Annotated Transformer).
+    The paper uses post-norm, LayerNorm(x + Sublayer(x)); the norm is applied
+    *before* the sublayer here for training stability, following the
+    Annotated Transformer.
     """
 
     def __init__(self, size: int, dropout: float):
@@ -229,7 +233,8 @@ class SublayerConnection(nn.Module):
         self.norm = LayerNorm(size)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, sublayer) -> torch.Tensor:
+    def forward(self, x: torch.Tensor,
+                sublayer: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
         return x + self.dropout(sublayer(self.norm(x)))
 
 
@@ -426,8 +431,8 @@ def make_model(
 ) -> EncoderDecoder:
     """
     Construct a Transformer from hyperparameters.
-    Colab-friendly small model: N=2, d_model=256, d_ff=512, h=4
-    Full paper base model:      N=6, d_model=512, d_ff=2048, h=8
+    Colab-friendly small model (train.py): N=3, d_model=256, d_ff=512, h=4
+    Full paper base model:                 N=6, d_model=512, d_ff=2048, h=8
     """
     c = copy.deepcopy
     attn = MultiHeadAttention(h, d_model, dropout)

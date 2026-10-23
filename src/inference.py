@@ -1,29 +1,36 @@
 """
 inference.py — Translate German → English using a trained Transformer.
 
-Usage:
-    python inference.py
-    python inference.py --checkpoint checkpoints/epoch_08.pt --sentence "Ein Hund läuft im Park."
+Usage (from the repository root):
+    python src/inference.py                                    # demo sentences
+    python src/inference.py --sentence "Ein Hund läuft im Park."
+    python src/inference.py --sentence "Ein Hund läuft im Park." --beam 4
 """
 
 import argparse
 import os
-import torch
-import spacy
+from typing import Tuple
 
-from model import make_model, subsequent_mask
+import spacy
+import torch
+
+from beam_search import translate_beam
+from data_pipeline import Vocab
+from model import EncoderDecoder, make_model, subsequent_mask
 
 
 # ─────────────────────────────────────────────
 # Greedy Decoding
 # ─────────────────────────────────────────────
 
-def greedy_decode(model, src, src_mask, max_len: int, start_symbol: int, device):
+def greedy_decode(model: EncoderDecoder, src: torch.Tensor,
+                  src_mask: torch.Tensor, max_len: int, start_symbol: int,
+                  device: torch.device) -> torch.Tensor:
     """
     Decode one sentence with greedy (argmax) decoding.
     At each step we pick the token with highest probability and feed it back.
 
-    For better translations, replace this with beam search (see README).
+    For better translations use beam search (--beam N, see beam_search.py).
     """
     model.eval()
     with torch.no_grad():
@@ -47,8 +54,9 @@ def greedy_decode(model, src, src_mask, max_len: int, start_symbol: int, device)
 # Translate a single sentence
 # ─────────────────────────────────────────────
 
-def translate(sentence: str, model, vocab_src, vocab_tgt, spacy_de, device,
-              max_len: int = 72):
+def translate(sentence: str, model: EncoderDecoder, vocab_src: Vocab,
+              vocab_tgt: Vocab, spacy_de: "spacy.language.Language",
+              device: torch.device, max_len: int = 72) -> str:
     """Tokenize → encode → greedy decode → detokenize."""
     model.eval()
 
@@ -80,7 +88,9 @@ def translate(sentence: str, model, vocab_src, vocab_tgt, spacy_de, device,
 # Load model from checkpoint
 # ─────────────────────────────────────────────
 
-def load_model(checkpoint_path: str, device):
+def load_model(checkpoint_path: str,
+               device: torch.device) -> Tuple[EncoderDecoder, Vocab, Vocab]:
+    """Rebuild the model from a train.py checkpoint and load its weights."""
     print(f"Loading checkpoint: {checkpoint_path}")
     ckpt = torch.load(
         checkpoint_path,
@@ -122,12 +132,14 @@ DEMO_SENTENCES = [
 ]
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Translate De→En with Transformer")
     parser.add_argument("--checkpoint", default="checkpoints/epoch_08.pt",
                         help="Path to model checkpoint (.pt)")
     parser.add_argument("--sentence", default=None,
                         help="German sentence to translate (runs demo if omitted)")
+    parser.add_argument("--beam", type=int, default=0,
+                        help="Beam size for beam search (0 = greedy decoding)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -138,7 +150,7 @@ def main():
         if os.path.exists(alt):
             args.checkpoint = alt
         else:
-            print("No checkpoint found. Train first: python train.py")
+            print("No checkpoint found. Train first: python src/train.py")
             return
 
     model, vocab_src, vocab_tgt = load_model(args.checkpoint, device)
@@ -147,20 +159,23 @@ def main():
     try:
         spacy_de = spacy.load("de_core_news_sm")
     except OSError:
-        import os as _os
-        _os.system("python -m spacy download de_core_news_sm")
+        os.system("python -m spacy download de_core_news_sm")
         spacy_de = spacy.load("de_core_news_sm")
 
+    def run(sentence: str) -> str:
+        if args.beam > 0:
+            return translate_beam(sentence, model, vocab_src, vocab_tgt,
+                                  spacy_de, device, beam_size=args.beam)
+        return translate(sentence, model, vocab_src, vocab_tgt, spacy_de, device)
+
     if args.sentence:
-        translation = translate(args.sentence, model, vocab_src, vocab_tgt,
-                                spacy_de, device)
+        translation = run(args.sentence)
         print(f"\nDE: {args.sentence}")
         print(f"EN: {translation}")
     else:
         print("\n── Demo Translations ──\n")
         for sent in DEMO_SENTENCES:
-            translation = translate(sent, model, vocab_src, vocab_tgt,
-                                    spacy_de, device)
+            translation = run(sent)
             print(f"DE: {sent}")
             print(f"EN: {translation}\n")
 

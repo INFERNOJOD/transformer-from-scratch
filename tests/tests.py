@@ -1,13 +1,11 @@
 """
 tests.py — Unit Tests for the Transformer Implementation
 
-Run with:
-    python tests.py
-    python -m pytest tests.py -v   (if pytest installed)
+Run (from the repository root):
+    python tests/tests.py
+    python -m pytest tests/tests.py -v   (if pytest is installed)
 
-Having tests is one of the biggest signals that separates a real engineering
-project from a classroom reproduction. Most student ML projects have zero tests.
-These cover:
+Coverage:
   - Correct output shapes for every component
   - Mathematical properties (attention sums to 1, masking works, etc.)
   - Gradient flow (model is trainable)
@@ -15,17 +13,13 @@ These cover:
   - Edge cases
 """
 import sys
+import unittest
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from model import make_model
-from rope import apply_rope
-from flash_attention import flash_attention_tiled
 
 import torch
 import torch.nn as nn
-import math
-import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 # ─────────────────────────────────────────────

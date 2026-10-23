@@ -4,33 +4,33 @@ benchmark.py — Attention Speed & Memory Benchmarks
 Runs real experiments on your hardware and prints actual numbers.
 DO NOT hardcode results — run this script and copy the output into README.md.
 
-Usage:
-    python benchmark.py                    # full benchmark
-    python benchmark.py --quick            # fewer seq lengths, faster
-    python benchmark.py --save             # saves results to benchmark_results.json
+Usage (from the repository root):
+    python src/benchmark.py                # full benchmark
+    python src/benchmark.py --quick        # fewer seq lengths, faster
+    python src/benchmark.py --save         # saves results to benchmark_results.json
 
 What it measures:
     1. Standard vs Flash Attention — latency across sequence lengths
     2. KV Cache — decoding time with vs without cache
     3. Mixed Precision — training step time FP32 vs FP16
     4. Memory usage — peak GPU memory per config (GPU only)
-
-Run this on Colab after training, then paste the printed table into README.md.
 """
 
-import torch
-import time
-import json
 import argparse
+import json
 import platform
-from typing import Dict, List
+import time
+from typing import Callable, Dict, List
+
+import torch
 
 
 # ─────────────────────────────────────────────
 # Timing utilities
 # ─────────────────────────────────────────────
 
-def timed(fn, n_warmup: int = 5, n_runs: int = 20, device: str = "cpu") -> float:
+def timed(fn: Callable[[], object], n_warmup: int = 5, n_runs: int = 20,
+          device: str = "cpu") -> float:
     """
     Returns median execution time in milliseconds.
     Uses CUDA synchronization if on GPU for accurate timing.
@@ -54,7 +54,7 @@ def timed(fn, n_warmup: int = 5, n_runs: int = 20, device: str = "cpu") -> float
     return times[n_runs // 2]  # median
 
 
-def peak_memory_mb(fn, device: str) -> float:
+def peak_memory_mb(fn: Callable[[], object], device: str) -> float:
     """Returns peak GPU memory used by fn() in MB. Returns 0 on CPU."""
     if device != "cuda":
         return 0.0
@@ -293,7 +293,8 @@ def benchmark_mixed_precision(
 # System info header
 # ─────────────────────────────────────────────
 
-def print_system_info(device: str):
+def print_system_info(device: str) -> None:
+    """Print device, PyTorch and Python version header."""
     print(f"\n{'='*65}")
     print(f"  BENCHMARK RESULTS")
     print(f"{'='*65}")
@@ -312,7 +313,7 @@ def print_system_info(device: str):
 # Main
 # ─────────────────────────────────────────────
 
-def main():
+def main() -> Dict[str, List[Dict]]:
     parser = argparse.ArgumentParser(description="Run benchmarks")
     parser.add_argument("--quick", action="store_true",
                         help="Fewer sequence lengths for a fast run")
@@ -349,15 +350,9 @@ def main():
         batch_sizes, seq_len=64, d_model=256, h=4, N=3, device=device
     )
 
-    print(f"\n{'='*65}")
-    print(f"  Copy the tables above into your README.md")
-    print(f"  Replace the placeholder rows with these real numbers.")
-    print(f"{'='*65}\n")
-
     if args.save:
-        import json as _json
         with open("benchmark_results.json", "w") as f:
-            _json.dump({
+            json.dump({
                 "device": device,
                 "pytorch_version": torch.__version__,
                 "results": all_results,
