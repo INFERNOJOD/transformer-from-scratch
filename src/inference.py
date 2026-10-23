@@ -9,6 +9,7 @@ Usage (from the repository root):
 
 import argparse
 import os
+import sys
 from typing import Callable, Dict, List, Optional, Tuple
 
 import spacy
@@ -98,15 +99,52 @@ def translate(sentence: str, model: EncoderDecoder, vocab_src: Vocab,
 # Load model from checkpoint
 # ─────────────────────────────────────────────
 
+# Keys every train.py checkpoint (checkpoints/epoch_XX.pt) provides
+REQUIRED_CHECKPOINT_KEYS = ("model_state", "config", "vocab_src", "vocab_tgt")
+
+
+class CheckpointFormatError(ValueError):
+    """The loaded file is not a full train.py checkpoint."""
+
+
+def validate_checkpoint(ckpt: object, source: str = "checkpoint") -> None:
+    """
+    Raise CheckpointFormatError unless ckpt is a full train.py checkpoint
+    dict. A bare state_dict (e.g. transformer_final.pt, which train.py saves
+    with model.state_dict()) holds only weights, without the config and
+    vocabularies needed to rebuild the model and tokenize text.
+    """
+    need = ("a full checkpoint saved by train.py (e.g. checkpoints/epoch_08.pt), "
+            "which also stores the model config (N, d_model, d_ff, h and "
+            "architecture flags) and the source/target vocabularies")
+    if not isinstance(ckpt, dict):
+        raise CheckpointFormatError(
+            f"{source} contains a {type(ckpt).__name__}, not a checkpoint dict. "
+            f"Inference needs {need}.")
+    if ckpt and all(isinstance(v, torch.Tensor) for v in ckpt.values()):
+        raise CheckpointFormatError(
+            f"{source} is a bare state_dict (model weights only). Inference "
+            f"needs {need}. Pass one with --checkpoint.")
+    missing = [k for k in REQUIRED_CHECKPOINT_KEYS if k not in ckpt]
+    if missing:
+        raise CheckpointFormatError(
+            f"{source} is missing {', '.join(missing)}. Inference needs {need}.")
+
+
 def load_checkpoint(checkpoint_path: str, device: torch.device) -> Dict:
     """Load a train.py checkpoint (contains Vocab objects, so not weights_only)."""
     print(f"Loading checkpoint: {checkpoint_path}")
     return torch.load(checkpoint_path, map_location=device, weights_only=False)
 
 
-def model_from_checkpoint(ckpt: Dict, device: torch.device
+def model_from_checkpoint(ckpt: Dict, device: torch.device,
+                          source: str = "checkpoint"
                           ) -> Tuple[EncoderDecoder, Vocab, Vocab]:
-    """Rebuild the model described by a checkpoint and load its weights."""
+    """
+    Rebuild the model described by a checkpoint and load its weights.
+    Raises CheckpointFormatError for a bare state_dict or incomplete dict.
+    """
+    validate_checkpoint(ckpt, source)
     vocab_src = ckpt["vocab_src"]
     vocab_tgt = ckpt["vocab_tgt"]
     cfg = ckpt["config"]
@@ -124,15 +162,17 @@ def model_from_checkpoint(ckpt: Dict, device: torch.device
 
     model.load_state_dict(ckpt["model_state"])
     model.eval()
-    print(f"Loaded model from epoch {ckpt['epoch']} "
-          f"(val loss: {ckpt['val_loss']:.4f})")
+    if "epoch" in ckpt and "val_loss" in ckpt:
+        print(f"Loaded model from epoch {ckpt['epoch']} "
+              f"(val loss: {ckpt['val_loss']:.4f})")
     return model, vocab_src, vocab_tgt
 
 
 def load_model(checkpoint_path: str,
                device: torch.device) -> Tuple[EncoderDecoder, Vocab, Vocab]:
     """Rebuild the model from a train.py checkpoint and load its weights."""
-    return model_from_checkpoint(load_checkpoint(checkpoint_path, device), device)
+    return model_from_checkpoint(load_checkpoint(checkpoint_path, device), device,
+                                 source=checkpoint_path)
 
 
 # ─────────────────────────────────────────────
@@ -164,13 +204,18 @@ def main() -> None:
         # Fall back to final model
         alt = "transformer_final.pt"
         if os.path.exists(alt):
+            print(f"{args.checkpoint} not found, trying {alt}")
             args.checkpoint = alt
         else:
             print("No checkpoint found. Train first: python src/train.py")
             return
 
     ckpt = load_checkpoint(args.checkpoint, device)
-    model, vocab_src, vocab_tgt = model_from_checkpoint(ckpt, device)
+    try:
+        model, vocab_src, vocab_tgt = model_from_checkpoint(
+            ckpt, device, source=args.checkpoint)
+    except CheckpointFormatError as e:
+        sys.exit(f"Error: {e}")
 
     # Load tokenizer: BPE merges stored in the checkpoint, else spaCy
     bpe = tokenizers_from_checkpoint(ckpt)

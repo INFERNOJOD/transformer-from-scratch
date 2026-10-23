@@ -625,6 +625,69 @@ class TestCachedDecoding(unittest.TestCase):
             self.assertEqual(k.shape[2], src.size(1))
 
 
+class TestInferenceCheckpointLoading(unittest.TestCase):
+    """inference.load_model on full checkpoints vs bare state_dicts."""
+
+    CONFIG = {"N": 1, "d_model": 16, "d_ff": 32, "h": 2}
+
+    def setUp(self):
+        import tempfile
+        from data_pipeline import Vocab
+        from model import make_model
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        itos = ["<s>", "</s>", "<blank>", "<unk>", "a", "b"]
+        self.vocab = Vocab({t: i for i, t in enumerate(itos)}, itos)
+        torch.manual_seed(0)
+        self.model = make_model(len(itos), len(itos), dropout=0.0, **self.CONFIG)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _save(self, name, obj):
+        path = self.tmp / name
+        torch.save(obj, path)
+        return str(path)
+
+    def _full_checkpoint(self):
+        return {"epoch": 1, "val_loss": 2.0, "model_state": self.model.state_dict(),
+                "vocab_src": self.vocab, "vocab_tgt": self.vocab,
+                "config": dict(self.CONFIG)}
+
+    def _load(self, path):
+        import contextlib
+        import io
+        from inference import load_model
+        with contextlib.redirect_stdout(io.StringIO()):
+            return load_model(path, torch.device("cpu"))
+
+    def test_full_checkpoint_loads(self):
+        path = self._save("full.pt", self._full_checkpoint())
+        model, vocab_src, vocab_tgt = self._load(path)
+        self.assertEqual(len(vocab_src), 6)
+        for k, v in self.model.state_dict().items():
+            self.assertTrue(torch.equal(model.state_dict()[k], v), k)
+
+    def test_bare_state_dict_gives_clear_error(self):
+        from inference import CheckpointFormatError
+        path = self._save("transformer_final.pt", self.model.state_dict())
+        with self.assertRaises(CheckpointFormatError) as ctx:
+            self._load(path)
+        msg = str(ctx.exception)
+        self.assertIn("bare state_dict", msg)
+        self.assertIn("config", msg)
+        self.assertIn("vocabularies", msg)
+
+    def test_incomplete_checkpoint_names_missing_keys(self):
+        from inference import CheckpointFormatError
+        ckpt = self._full_checkpoint()
+        del ckpt["vocab_tgt"], ckpt["config"]
+        with self.assertRaises(CheckpointFormatError) as ctx:
+            self._load(self._save("partial.pt", ckpt))
+        self.assertIn("config", str(ctx.exception))
+        self.assertIn("vocab_tgt", str(ctx.exception))
+
+
 class TestBenchmarkKVCache(unittest.TestCase):
     """CPU smoke test for benchmark.py's KV-cache paths (no timings recorded)."""
 
@@ -1316,6 +1379,7 @@ if __name__ == "__main__":
         TestKVCache,
         TestCachedDecoding,
         TestBenchmarkKVCache,
+        TestInferenceCheckpointLoading,
         TestFlashAttention,
         TestDataPipelineVocab,
         TestAblationFlags,
