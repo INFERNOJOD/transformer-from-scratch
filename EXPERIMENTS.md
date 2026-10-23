@@ -168,8 +168,8 @@ message.
 same config otherwise (N=3, d_model=256, 8 epochs).
 
 **Command:**
-```python
-# in train.py, swap MultiHeadAttention for RoPEMultiHeadAttention
+```bash
+python src/train.py --use-rope
 ```
 
 **Result:**
@@ -189,6 +189,11 @@ actually help here")_
 **Date:** _(fill in)_
 **Change:** Swap LayerNorm → RMSNorm, ReLU FFN → SwiGLU FFN.
 
+**Command:**
+```bash
+python src/train.py --use-rmsnorm --use-swiglu
+```
+
 **Result:**
 ```
 Val Loss:  ___
@@ -202,6 +207,11 @@ Params:    ___  (SwiGLU uses 3 matrices vs FFN's 2 — note the difference)
 
 **Date:** _(fill in)_
 **Change:** Apply `apply_weight_tying()` after model creation.
+
+**Command:**
+```bash
+python src/train.py --tie-weights
+```
 
 **Result:**
 ```
@@ -368,11 +378,13 @@ original session that built it, not just internally consistent.
   current "no benefit" finding is itself useful, but the natural follow-up
   question is "at what scale does it start to matter" — and I don't have
   that answer yet.
-- **Plug RoPE, RMSNorm+SwiGLU, and weight tying into `train.py`** as actual
-  retrained ablations, not just unit-tested standalone modules. Right now
-  I can prove each component works in isolation, but not what it changes
-  about end-to-end translation quality on this specific task.
-- **Migrate to a BPE tokenizer.** The `<unk>` failure on "ice fishing hut"
+- **Run RoPE, RMSNorm+SwiGLU, and weight tying as retrained ablations.**
+  They are now wired into `train.py` as flags (Experiments 3-5 above), but
+  no run has been done yet. Right now I can prove each component works in
+  isolation, but not what it changes about end-to-end translation quality
+  on this specific task.
+- **Train with the BPE tokenizer** (`python src/train.py --bpe`, now
+  implemented in `src/bpe.py`). The `<unk>` failure on "ice fishing hut"
   showed up identically across two independent training runs — a clear,
   reproducible signal that vocabulary coverage (not training variance) is
   the next real bottleneck, and BPE is the standard fix.

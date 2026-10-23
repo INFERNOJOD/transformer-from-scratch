@@ -43,12 +43,22 @@ tested at this smaller scale.
 
 ## Known Limitations
 
-### Tokenization is not built from scratch
-The pipeline currently uses spaCy's pretrained tokenizers for German and
-English, not a custom-trained subword tokenizer. The original paper uses
-byte-pair encoding (BPE) trained on the translation corpus itself. This is
-the most significant remaining gap between this repo and a fully
-from-scratch implementation — **planned as the next addition** (see below).
+### The reported model uses spaCy word-level tokenization
+All trained results use spaCy's pretrained tokenizers with a word-level
+vocabulary (`min_freq=2`), not subwords. A from-scratch byte-level BPE
+tokenizer now exists (`src/bpe.py`, opt-in with `python src/train.py --bpe`)
+and is unit-tested (exact round trip, fewer tokens after merges, unseen
+words never become `<unk>`), but:
+- **No model has been trained or evaluated with BPE yet**, so there is no
+  BPE BLEU number and no evidence yet that it fixes the `<unk>` failures in
+  `RESULTS.md`.
+- BLEU for a BPE checkpoint is computed on detokenized text, while the
+  spaCy baseline scores space-joined word tokens. The two numbers would not
+  be strictly comparable without re-scoring the baseline the same way.
+- BPE sequences are longer than word sequences; `max_padding=72` has not
+  been re-checked against BPE lengths on Multi30k.
+- `visualize.py` does not support BPE checkpoints yet (it exits with a
+  message).
 
 ### Data pipeline migrated off torchtext
 `torchtext` (originally used for dataset loading and vocabulary building,
@@ -62,20 +72,32 @@ minimal custom `Vocab` class matching torchtext's original interface — the
 rest of the training pipeline (`Batch`, masking, the model itself) is
 unchanged. Covered by 7 unit tests in `tests.py`.
 
-### Encoder-decoder, not decoder-only
-The architecture follows the original 2017 paper's encoder-decoder design,
-which is well-suited to translation (a clear source→target mapping) but is
-not the dominant architecture for general-purpose language modeling today.
-Modern LLMs (GPT, LLaMA, Mistral) are decoder-only, trained on
-next-token-prediction over unstructured text rather than parallel
-sentence pairs.
+### Decoder-only mode exists but has no training pipeline
+The translation model follows the original 2017 encoder-decoder design.
+A GPT-style decoder-only model (`make_decoder_only_model` in `model.py`)
+is implemented and unit-tested (causal masking, shapes, gradient flow,
+overfitting a toy sequence), but there is no training script or text
+corpus for it. Nothing has been trained with it. Its `generate()` is
+greedy-only and recomputes the full prefix each step (no KV cache, no
+sampling).
 
-### KV Cache memory grows linearly with sequence length
-The current KV cache implementation stores one K,V pair per attention head
-per layer per token. For long sequences or large batch sizes, this becomes
-the dominant memory cost during inference. Grouped Query Attention (GQA) —
-where multiple query heads share a single K,V head — is the standard fix
-for this and is not yet implemented here.
+### GQA is a standalone module, not part of the trained model
+`src/gqa.py` implements Grouped Query Attention. It is tested to match
+standard multi-head attention exactly when `num_kv_heads == h`, and to
+shrink the KV cache by `h / num_kv_heads`. However, it is not wired into
+`make_model()` or `train.py`. No model has been trained with GQA, and its
+memory and speed savings have not been benchmarked (the
+`python src/gqa.py` output is a shape calculation, not a measurement).
+Converting a trained MHA model with `from_mha(num_kv_heads < h)` would
+normally need a short "uptraining" phase, which is not implemented.
+
+### Ablation flags are implemented but not yet trained
+`make_model()` / `train.py` can now switch on RoPE, RMSNorm, SwiGLU and
+weight tying (defaults reproduce the baseline exactly), and each flag is
+tested to build and run. None of these configurations has been trained, so
+the ablation table still has only baseline numbers. With `--use-swiglu`,
+`d_ff` is not rescaled, so that variant has more parameters than the
+baseline.
 
 ### No distributed / multi-GPU training
 Training is single-GPU (or CPU) only. The original paper's `train_worker`
@@ -106,24 +128,29 @@ kernel on supported hardware.
 
 ## Planned Next Steps
 
-In rough priority order:
+### Done (implemented and unit-tested, not yet trained)
 
-1. **BPE tokenizer from scratch** — train byte-pair merge rules directly on
-   the Multi30k corpus, replacing the spaCy dependency. This closes the
-   last black-box in the pipeline.
+- **Ablation flags** — `--use-rope`, `--use-rmsnorm`, `--use-swiglu`,
+  `--tie-weights` on `train.py` (`make_model()` keyword arguments).
+- **BPE tokenizer from scratch** — `src/bpe.py`, opt-in via `train.py --bpe`.
+- **Decoder-only mode** — `make_decoder_only_model()` in `model.py`.
+- **Grouped Query Attention** — `src/gqa.py`.
+- **`torch.profiler` integration** — `src/profile_model.py` (per-op
+  time/memory breakdown; see `RESULTS.md`).
 
-2. **Decoder-only mode** — strip the encoder and cross-attention, train the
-   decoder stack alone for next-token prediction on an unstructured text
-   corpus (e.g. TinyShakespeare). This is architecturally what GPT/LLaMA
-   actually are.
+### Next, in rough priority order
 
-3. **Grouped Query Attention (GQA)** — modify `MultiHeadAttention` so that
-   multiple query heads share K,V projections, shrinking the KV cache
-   memory footprint at longer context lengths.
+1. **Run the ablations** — retrain with each flag (and `--bpe`) under the
+   baseline's settings and fill in the ablation table with measured
+   numbers, including whether BPE removes the `<unk>` failures.
 
-4. **`torch.profiler` integration** — replace the wall-clock benchmarking
-   in `benchmark.py` with proper PyTorch profiler traces, to get per-layer
-   breakdowns of time and memory rather than just end-to-end numbers.
+2. **Train the decoder-only model** — add a small next-token-prediction
+   training loop on an unstructured text corpus (e.g. TinyShakespeare),
+   using the BPE tokenizer.
+
+3. **Wire GQA into the models** — a `num_kv_heads` option in `make_model()`
+   / `make_decoder_only_model()` plus cache-aware decoding, then benchmark
+   the cache memory against standard attention.
 
 ---
 

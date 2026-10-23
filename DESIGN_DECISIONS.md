@@ -15,8 +15,9 @@ generates the target (English) autoregressively, attending back to the
 encoder's output via cross-attention.
 
 Decoder-only models (GPT-style) are better suited to open-ended generation
-where there's no clean "source" / "target" split — see `LIMITATIONS.md` for
-why this is the natural next architecture to implement.
+where there's no clean "source" / "target" split. A decoder-only model is
+now available as a separate option (`make_decoder_only_model`, see below),
+but the translation pipeline and all reported results stay encoder-decoder.
 
 ---
 
@@ -196,7 +197,7 @@ The KV cache stores the K, V tensors for tokens already processed, so at
 each new step only the *new* token's K, V need to be computed and appended.
 This reduces total work to `O(n)`. The cost is memory: the cache grows
 linearly with sequence length, which is why techniques like GQA exist to
-shrink the cache further (see `LIMITATIONS.md`).
+shrink the cache further (implemented in `gqa.py`, see below).
 
 ---
 
@@ -264,3 +265,105 @@ mirrors torchtext's original interface (`vocab(tokens)`, `vocab["<tok>"]`,
 `set_default_index`, `get_itos()`) so nothing downstream — masking, batching,
 the model itself — needed to change. This was a deliberate scope decision:
 fix the deprecated dependency, not rewrite a working training pipeline.
+
+---
+
+## Why ablation flags that default to the baseline?
+
+RoPE, RMSNorm, SwiGLU and weight tying were each implemented and tested in
+isolation, but an ablation needs them inside the *same* model and training
+loop as the baseline, changing one thing at a time. `make_model()` therefore
+takes `use_rope`, `use_rmsnorm`, `use_swiglu` and `tie_weights` (exposed in
+`train.py` as `--use-rope` etc. and saved in each checkpoint's config).
+
+Every flag defaults to off, and with all flags off the factory builds the
+same modules in the same order as before. The baseline is bit-for-bit
+unchanged: same parameter count, same `state_dict` keys, same weights
+for a given seed. This keeps the existing checkpoints and reported results
+valid, and a unit test pins the baseline parameter count. Checkpoints saved
+before the flags existed load as the baseline because missing keys default
+to off.
+
+Two details:
+- **SwiGLU keeps the given `d_ff`.** SwiGLU has three bias-free matrices vs
+  the ReLU FFN's two, so at equal `d_ff` it has more parameters. For a
+  parameter-matched comparison, pass `d_ff ≈ 2/3 × d_ff` explicitly; the
+  factory doesn't silently rescale it.
+- **Only the target embedding is tied.** Source and target use separate
+  vocabularies here, so the source embedding has a different shape.
+
+---
+
+## Why RoPE only in self-attention, not cross-attention?
+
+RoPE makes the attention score depend on the *relative* position `m − n`
+between a query and a key. In self-attention both come from the same
+sequence, so `m − n` is meaningful. In cross-attention, queries are target
+positions and keys are source positions, so their difference has no
+consistent meaning (German and English word order differ). With
+`use_rope=True`, encoder and decoder self-attention use
+`RoPEMultiHeadAttention`, cross-attention stays position-free, and the
+sinusoidal positional encoding is removed so RoPE is the only source of
+position information. A test checks that the model is still order-sensitive.
+
+---
+
+## Why a byte-level BPE tokenizer, and why opt-in?
+
+The word-level vocabulary maps anything seen fewer than twice to `<unk>`,
+which is the most consistent failure in `RESULTS.md` ("ice fishing hut").
+BPE (Sennrich et al., 2016) builds a subword vocabulary by repeatedly
+merging the most frequent adjacent pair of tokens. The *byte-level* variant
+(as in GPT-2) starts from the 256 possible bytes rather than characters,
+so every string can be encoded and `<unk>` is never produced. A
+GPT-2-style pre-tokenizer keeps the leading space attached to each word,
+which makes decoding plain concatenation: `decode(encode(s)) == s` for any
+`s`.
+
+Implementation choices in `bpe.py`:
+- **Fast, exact training.** Pair counts are updated incrementally (only
+  words containing the merged pair are touched) and the best pair comes
+  from a lazy max-heap, with ties broken by token id so training is
+  deterministic. A unit test checks the learned merges against a naive
+  recount-everything implementation.
+- **Fits the existing pipeline.** Special-token ids match the word-level
+  vocab (`<s>`=0, `</s>`=1, `<blank>`=2, `<unk>`=3), and `to_vocab()`
+  returns a `data_pipeline.Vocab`, so batching, masking and the model are
+  unchanged. Merges that would spell a special token are blocked.
+- **Opt-in.** `train.py` still uses spaCy words by default, because all
+  reported numbers come from that setup. `--bpe` trains one tokenizer per
+  language on the training split only and stores the merges in the
+  checkpoint, so `evaluate.py` and `inference.py` tokenize and detokenize
+  correctly.
+
+---
+
+## Why does the decoder-only model reuse `EncoderLayer`?
+
+A GPT block is masked self-attention followed by an FFN, each wrapped in a
+pre-norm residual. That is exactly `EncoderLayer`; the only difference is
+the mask. So `make_decoder_only_model()` stacks `EncoderLayer`s in an
+`Encoder` (layers + final norm), adds `Embeddings` + positional encoding
+and a `Generator`, and `lm_mask()` supplies the causal (optionally
+padded) mask. There is no cross-attention and no memory. Reusing the layers
+means the decoder-only model gets the same ablation flags for free, and
+with RoPE + RMSNorm + SwiGLU it matches the LLaMA block layout. Tests check
+that changing a future token never changes earlier outputs.
+
+---
+
+## Why Grouped Query Attention?
+
+The KV cache stores `2 × batch × n_kv_heads × seq_len × d_k` values per
+layer, and with standard MHA `n_kv_heads = h`. GQA (Ainslie et al., 2023)
+keeps all `h` query heads but has groups of `h / n_kv` query heads share
+one K/V head (`n_kv = 1` is Multi-Query Attention). The cache and the K/V
+projections shrink by `h / n_kv`, while quality stays close to MHA because
+queries keep their full resolution.
+
+`GroupedQueryAttention` keeps `MultiHeadAttention`'s call signature, caches
+only the compact K/V heads, and expands them (`repeat_interleave`) only at
+attention time. `from_mha()` converts a trained `MultiHeadAttention`. With
+`num_kv_heads == h` it is an exact copy, which is how the tests check
+equivalence. With fewer heads it mean-pools each group's K/V projections,
+the checkpoint-conversion step from the GQA paper.
