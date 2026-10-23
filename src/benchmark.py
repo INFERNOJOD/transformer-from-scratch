@@ -128,6 +128,40 @@ def benchmark_attention(
 # Benchmark 2: KV Cache
 # ─────────────────────────────────────────────
 
+def decode_no_cache(model: torch.nn.Module, src: torch.Tensor,
+                    src_mask: torch.Tensor, decode_len: int) -> torch.Tensor:
+    """
+    Greedy-decode exactly decode_len tokens (no EOS stop), re-running the
+    decoder over the full prefix every step. Returns (1, decode_len + 1) ids.
+    """
+    from model import subsequent_mask
+
+    with torch.no_grad():
+        memory = model.encode(src, src_mask)
+        ys = torch.zeros(1, 1, dtype=torch.long, device=src.device)
+        for _ in range(decode_len):
+            tgt_mask = subsequent_mask(ys.size(1)).to(src.device)
+            out = model.decode(memory, src_mask, ys, tgt_mask)
+            next_tok = model.generator(out[:, -1]).argmax(dim=-1)  # (1,)
+            ys = torch.cat([ys, next_tok.unsqueeze(1)], dim=1)     # (1, t+1)
+    return ys
+
+
+def decode_with_cache(model: torch.nn.Module, src: torch.Tensor,
+                      src_mask: torch.Tensor, decode_len: int) -> torch.Tensor:
+    """
+    Same decoding as decode_no_cache, but through kv_cache.greedy_decode_cached:
+    each step feeds only the new token and reuses cached self-attention K,V
+    (cross-attention K,V are computed once). Returns (1, decode_len + 1) ids.
+    """
+    from kv_cache import greedy_decode_cached
+
+    # end_symbol=-1 never matches, so exactly decode_len tokens are generated
+    ys = greedy_decode_cached(model, src, src_mask, max_len=decode_len + 1,
+                              start_symbol=0, end_symbol=-1, device=src.device)
+    return ys.unsqueeze(0)
+
+
 def benchmark_kv_cache(
     decode_lengths: List[int],
     d_model: int = 256,
@@ -140,8 +174,9 @@ def benchmark_kv_cache(
 
     Without cache: re-runs full sequence every step → O(n²)
     With cache:    runs only new token every step → O(n)
+    Both paths decode the same number of tokens and produce the same ids.
     """
-    from model import make_model, subsequent_mask
+    from model import make_model
 
     model = make_model(src_vocab_size=1000, tgt_vocab_size=1000,
                        N=N, d_model=d_model, d_ff=d_model*2, h=h,
@@ -161,31 +196,10 @@ def benchmark_kv_cache(
         src = torch.randint(1, 1000, (1, 16), device=device)
         src_mask = (src != 0).unsqueeze(-2)
 
-        # Without cache: recompute full sequence every step
-        def decode_no_cache():
-            with torch.no_grad():
-                memory = model.encode(src, src_mask)
-                ys = torch.zeros(1, 1, dtype=torch.long, device=device)
-                for i in range(decode_len):
-                    tgt_mask = subsequent_mask(ys.size(1)).to(device)
-                    out = model.decode(memory, src_mask, ys, tgt_mask)
-                    next_tok = model.generator(out[:, -1]).argmax(dim=-1)  # (1,)
-                    ys = torch.cat([ys, next_tok.unsqueeze(1)], dim=1)     # (1, t+1)
-
-        # With cache: only process new token each step
-        def decode_with_cache():
-            with torch.no_grad():
-                memory = model.encode(src, src_mask)
-                ys = torch.zeros(1, 1, dtype=torch.long, device=device)
-                for i in range(decode_len):
-                    # Feed the growing sequence — decoder sees full context
-                    tgt_mask = subsequent_mask(ys.size(1)).to(device)
-                    out = model.decode(memory, src_mask, ys, tgt_mask)
-                    next_tok = model.generator(out[:, -1]).argmax(dim=-1)  # (1,)
-                    ys = torch.cat([ys, next_tok.unsqueeze(1)], dim=1)
-
-        t_no_cache = timed(decode_no_cache, n_warmup=2, n_runs=5, device=device)
-        t_cache    = timed(decode_with_cache, n_warmup=2, n_runs=5, device=device)
+        t_no_cache = timed(lambda: decode_no_cache(model, src, src_mask, decode_len),
+                           n_warmup=2, n_runs=5, device=device)
+        t_cache    = timed(lambda: decode_with_cache(model, src, src_mask, decode_len),
+                           n_warmup=2, n_runs=5, device=device)
         speedup = t_no_cache / t_cache
 
         print(f"  {decode_len:>6}  {t_no_cache:>14.2f}  {t_cache:>16.2f}  {speedup:>8.2f}×")

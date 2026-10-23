@@ -625,6 +625,33 @@ class TestCachedDecoding(unittest.TestCase):
             self.assertEqual(k.shape[2], src.size(1))
 
 
+class TestBenchmarkKVCache(unittest.TestCase):
+    """CPU smoke test for benchmark.py's KV-cache paths (no timings recorded)."""
+
+    def test_paths_run_and_match(self):
+        from benchmark import decode_no_cache, decode_with_cache
+        from model import make_model
+        torch.manual_seed(0)
+        model = make_model(100, 100, N=2, d_model=32, d_ff=64, h=4, dropout=0.0).eval()
+        for decode_len in (1, 5, 20):
+            src = torch.randint(1, 100, (1, 8))
+            src_mask = (src != 0).unsqueeze(-2)
+            no_cache = decode_no_cache(model, src, src_mask, decode_len)
+            cached = decode_with_cache(model, src, src_mask, decode_len)
+            self.assertEqual(no_cache.shape, (1, decode_len + 1))
+            self.assertTrue(torch.equal(no_cache, cached),
+                            f"{no_cache.tolist()} != {cached.tolist()}")
+
+    def test_benchmark_function_runs(self):
+        import contextlib
+        import io
+        from benchmark import benchmark_kv_cache
+        with contextlib.redirect_stdout(io.StringIO()):
+            results = benchmark_kv_cache([2, 4], d_model=32, h=4, N=1, device="cpu")
+        self.assertEqual([r["decode_steps"] for r in results], [2, 4])
+        self.assertTrue(all(r["no_cache_ms"] > 0 and r["cache_ms"] > 0 for r in results))
+
+
 # ─────────────────────────────────────────────
 # Test Suite 9: Flash Attention
 # ─────────────────────────────────────────────
@@ -1288,6 +1315,7 @@ if __name__ == "__main__":
         TestBeamSearch,
         TestKVCache,
         TestCachedDecoding,
+        TestBenchmarkKVCache,
         TestFlashAttention,
         TestDataPipelineVocab,
         TestAblationFlags,
