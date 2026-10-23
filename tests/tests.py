@@ -833,6 +833,133 @@ class TestBPE(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────
+# Test Suite 13: Decoder-only (GPT-style) model
+# ─────────────────────────────────────────────
+
+class TestDecoderOnly(unittest.TestCase):
+
+    V, D, N = 40, 32, 2
+
+    def build(self, **flags):
+        from model import make_decoder_only_model
+        torch.manual_seed(0)
+        return make_decoder_only_model(self.V, N=self.N, d_model=self.D,
+                                       d_ff=64, h=4, dropout=0.0, **flags)
+
+    def test_output_shapes(self):
+        model = self.build()
+        x = torch.randint(0, self.V, (3, 9))
+        h = model(x)
+        self.assertEqual(h.shape, (3, 9, self.D))
+        logp = model.generator(h)
+        self.assertEqual(logp.shape, (3, 9, self.V))
+        self.assertTrue(torch.allclose(logp.exp().sum(-1), torch.ones(3, 9), atol=1e-5))
+
+    def test_reuses_existing_layers_without_cross_attention(self):
+        from model import DecoderLayer, Encoder, EncoderLayer, MultiHeadAttention
+        model = self.build()
+        self.assertIsInstance(model.blocks, Encoder)
+        self.assertTrue(all(isinstance(l, EncoderLayer) for l in model.blocks.layers))
+        self.assertEqual(len([m for m in model.modules() if isinstance(m, DecoderLayer)]), 0)
+        self.assertEqual(len([m for m in model.modules()
+                              if isinstance(m, MultiHeadAttention)]), self.N)
+
+    def assert_causal(self, model):
+        """Changing token k must leave every position < k untouched."""
+        model.eval()
+        torch.manual_seed(2)
+        x = torch.randint(0, self.V, (2, 10))
+        base = model(x)
+        for k in (3, 7, 9):
+            x2 = x.clone()
+            x2[:, k:] = (x2[:, k:] + 1) % self.V
+            out = model(x2)
+            self.assertTrue(torch.allclose(base[:, :k], out[:, :k], atol=1e-6),
+                            f"position < {k} saw a future token")
+            self.assertFalse(torch.allclose(base[:, k:], out[:, k:], atol=1e-6))
+
+    def test_causal_masking_holds(self):
+        self.assert_causal(self.build())
+
+    def test_causal_masking_holds_with_rope(self):
+        self.assert_causal(self.build(use_rope=True))
+
+    def test_attention_weights_zero_above_diagonal(self):
+        model = self.build().eval()
+        model(torch.randint(0, self.V, (2, 8)))
+        for layer in model.blocks.layers:
+            w = layer.self_attn.attn_weights        # (B, h, T, T)
+            upper = torch.triu(torch.ones(8, 8, dtype=torch.bool), diagonal=1)
+            self.assertTrue(torch.all(w[..., upper] == 0))
+
+    def test_padding_mask(self):
+        from model import lm_mask
+        x = torch.tensor([[5, 6, 7, 0, 0]])
+        mask = lm_mask(x, pad_idx=0)
+        self.assertEqual(mask.shape, (1, 5, 5))
+        self.assertFalse(mask[0, 4, 3].item())   # padded key hidden
+        self.assertTrue(mask[0, 2, 1].item())    # earlier real token visible
+        self.assertFalse(mask[0, 1, 2].item())   # future hidden
+        model = self.build().eval()
+        out = model(x, lm_mask(x, pad_idx=0))
+        self.assertTrue(torch.isfinite(out).all())
+
+    def test_gradient_flow(self):
+        model = self.build()
+        x = torch.randint(0, self.V, (2, 8))
+        logp = model.generator(model(x[:, :-1]))
+        loss = nn.functional.nll_loss(logp.reshape(-1, self.V), x[:, 1:].reshape(-1))
+        loss.backward()
+        for name, p in model.named_parameters():
+            self.assertIsNotNone(p.grad, name)
+            self.assertTrue(torch.isfinite(p.grad).all(), name)
+            self.assertGreater(p.grad.norm().item(), 0, name)
+
+    def test_can_overfit_a_tiny_sequence(self):
+        """Next-token loss on one repeated sequence should drop sharply."""
+        model = self.build()
+        x = torch.arange(1, 13).unsqueeze(0).repeat(4, 1)
+        opt = torch.optim.Adam(model.parameters(), lr=3e-3)
+        losses = []
+        for _ in range(40):
+            logp = model.generator(model(x[:, :-1]))
+            loss = nn.functional.nll_loss(logp.reshape(-1, self.V), x[:, 1:].reshape(-1))
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            losses.append(loss.item())
+        self.assertLess(losses[-1], 0.5 * losses[0])
+
+    def test_all_flags_build_and_train(self):
+        from modern_components import RMSNorm, SwiGLUFeedForward
+        from rope import RoPEMultiHeadAttention
+        model = self.build(use_rope=True, use_rmsnorm=True,
+                           use_swiglu=True, tie_weights=True)
+        self.assertIs(model.generator.proj.weight, model.embed[0].lut.weight)
+        kinds = {type(m) for m in model.modules()}
+        self.assertTrue({RMSNorm, SwiGLUFeedForward, RoPEMultiHeadAttention} <= kinds)
+        x = torch.randint(0, self.V, (2, 6))
+        model.generator(model(x)).mean().backward()
+        self.assertTrue(all(torch.isfinite(p.grad).all() for p in model.parameters()))
+
+    def test_generate_greedy(self):
+        model = self.build()
+        prompt = torch.randint(0, self.V, (2, 4))
+        out = model.generate(prompt, max_new_tokens=5)
+        self.assertEqual(out.shape, (2, 9))
+        self.assertTrue(torch.equal(out[:, :4], prompt))
+        first = model.generator(model(prompt)[:, -1]).argmax(-1)
+        self.assertTrue(torch.equal(out[:, 4], first))
+
+    def test_generate_stops_at_eos(self):
+        model = self.build()
+        prompt = torch.randint(0, self.V, (1, 3))
+        eos = model.generate(prompt, max_new_tokens=1)[0, -1].item()
+        out = model.generate(prompt, max_new_tokens=10, eos_id=eos)
+        self.assertEqual(out.shape, (1, 4))
+
+
+# ─────────────────────────────────────────────
 # Run all tests
 # ─────────────────────────────────────────────
 
@@ -855,6 +982,7 @@ if __name__ == "__main__":
         TestDataPipelineVocab,
         TestAblationFlags,
         TestBPE,
+        TestDecoderOnly,
     ]
 
     for cls in test_classes:

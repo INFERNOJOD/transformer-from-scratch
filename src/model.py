@@ -4,6 +4,10 @@ model.py — Transformer Encoder-Decoder
 Paper: "Attention Is All You Need" — Vaswani et al., 2017
        https://arxiv.org/abs/1706.03762
 
+make_model() builds the encoder-decoder below (optionally with RoPE,
+RMSNorm, SwiGLU and weight tying); make_decoder_only_model() builds a
+GPT-style decoder-only LM from the same layers (section 11).
+
 Figure 1 — Full Architecture:
 
                         OUTPUT PROBABILITIES
@@ -443,6 +447,25 @@ class EncoderDecoder(nn.Module):
 # 10. Model Factory
 # ─────────────────────────────────────────────
 
+def _build_components(d_model: int, d_ff: int, h: int, dropout: float,
+                      use_rope: bool, use_rmsnorm: bool, use_swiglu: bool
+                      ) -> Tuple[nn.Module, nn.Module, nn.Module, nn.Module, NormFactory]:
+    """
+    Prototype sub-modules shared by both factories, selected by the ablation
+    flags: (attn, self_attn, feed_forward, positional_encoding, norm_cls).
+    `attn` is the plain (position-free) attention used for cross-attention.
+    Construction order is fixed so seeded baseline weights never change.
+    """
+    attn = MultiHeadAttention(h, d_model, dropout)
+    self_attn = (RoPEMultiHeadAttention(h, d_model, dropout, max_seq_len=5000)
+                 if use_rope else attn)
+    ff = (SwiGLUFeedForward(d_model, d_ff, dropout) if use_swiglu
+          else PositionwiseFeedForward(d_model, d_ff, dropout))
+    pos_enc = nn.Dropout(dropout) if use_rope else PositionalEncoding(d_model, dropout)
+    norm_cls = RMSNorm if use_rmsnorm else LayerNorm
+    return attn, self_attn, ff, pos_enc, norm_cls
+
+
 def make_model(
     src_vocab_size: int,
     tgt_vocab_size: int,
@@ -481,13 +504,8 @@ def make_model(
                    separate, so the source embedding is not tied.
     """
     c = copy.deepcopy
-    attn = MultiHeadAttention(h, d_model, dropout)
-    self_attn = (RoPEMultiHeadAttention(h, d_model, dropout, max_seq_len=5000)
-                 if use_rope else attn)
-    ff = (SwiGLUFeedForward(d_model, d_ff, dropout) if use_swiglu
-          else PositionwiseFeedForward(d_model, d_ff, dropout))
-    pos_enc = nn.Dropout(dropout) if use_rope else PositionalEncoding(d_model, dropout)
-    norm_cls = RMSNorm if use_rmsnorm else LayerNorm
+    attn, self_attn, ff, pos_enc, norm_cls = _build_components(
+        d_model, d_ff, h, dropout, use_rope, use_rmsnorm, use_swiglu)
 
     model = EncoderDecoder(
         encoder=Encoder(
@@ -508,5 +526,111 @@ def make_model(
 
     if tie_weights:
         apply_weight_tying(model)
+
+    return model
+
+
+# ─────────────────────────────────────────────
+# 11. Decoder-only (GPT-style) Language Model
+# ─────────────────────────────────────────────
+
+def lm_mask(tokens: torch.Tensor, pad_idx: Optional[int] = None) -> torch.Tensor:
+    """
+    Causal mask for a decoder-only model, optionally combined with a key
+    padding mask. Returns (1, T, T) without padding, else (B, T, T).
+    Assumes right-padding (real tokens first), so every query row keeps at
+    least one visible key.
+    """
+    mask = subsequent_mask(tokens.size(-1)).to(tokens.device)
+    if pad_idx is not None:
+        mask = mask & (tokens != pad_idx).unsqueeze(-2)
+    return mask
+
+
+class DecoderOnlyLM(nn.Module):
+    """
+    GPT-style decoder-only language model built from the existing layers.
+
+    A GPT block is masked self-attention + FFN, each in a pre-norm residual
+    — exactly EncoderLayer. So the block stack *is* an Encoder (N layers +
+    final norm); the only difference from the encoder is the causal mask,
+    which lm_mask() supplies. There is no cross-attention and no memory.
+
+        tokens → Embeddings + PE → [EncoderLayer × N, causal mask] → norm
+               → Generator (log-softmax over the vocabulary)
+    """
+
+    def __init__(self, blocks: Encoder, embed: nn.Sequential, generator: Generator):
+        super().__init__()
+        self.blocks = blocks
+        self.embed = embed
+        self.generator = generator
+
+    def forward(self, tokens: torch.Tensor,
+                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        tokens: (B, T) ids. mask defaults to the causal mask; pass
+        lm_mask(tokens, pad_idx) for padded batches.
+        Returns hidden states (B, T, d_model) — apply .generator for log-probs.
+        """
+        if mask is None:
+            mask = lm_mask(tokens)
+        return self.blocks(self.embed(tokens), mask)
+
+    @torch.no_grad()
+    def generate(self, prompt: torch.Tensor, max_new_tokens: int,
+                 eos_id: Optional[int] = None) -> torch.Tensor:
+        """
+        Greedy decoding: (B, T) prompt → (B, T + n) with n ≤ max_new_tokens.
+        Rows that emit eos_id are padded with eos_id; stops once all are done.
+        Re-runs the full prefix each step (no KV cache).
+        """
+        self.eval()
+        tokens = prompt
+        finished = torch.zeros(prompt.size(0), dtype=torch.bool, device=prompt.device)
+        for _ in range(max_new_tokens):
+            log_probs = self.generator(self(tokens)[:, -1])
+            next_tok = log_probs.argmax(dim=-1)
+            if eos_id is not None:
+                next_tok = next_tok.masked_fill(finished, eos_id)
+                finished |= next_tok == eos_id
+            tokens = torch.cat([tokens, next_tok.unsqueeze(1)], dim=1)
+            if eos_id is not None and finished.all():
+                break
+        return tokens
+
+
+def make_decoder_only_model(
+    vocab_size: int,
+    N: int = 6,
+    d_model: int = 512,
+    d_ff: int = 2048,
+    h: int = 8,
+    dropout: float = 0.1,
+    use_rope: bool = False,
+    use_rmsnorm: bool = False,
+    use_swiglu: bool = False,
+    tie_weights: bool = False,
+) -> DecoderOnlyLM:
+    """
+    Construct a GPT-style decoder-only LM with the same hyperparameters and
+    ablation flags as make_model(). With use_rope + use_rmsnorm + use_swiglu
+    + tie_weights this is a LLaMA-style block layout.
+    """
+    _, self_attn, ff, pos_enc, norm_cls = _build_components(
+        d_model, d_ff, h, dropout, use_rope, use_rmsnorm, use_swiglu)
+
+    model = DecoderOnlyLM(
+        blocks=Encoder(EncoderLayer(d_model, self_attn, ff, dropout, norm_cls), N),
+        embed=nn.Sequential(Embeddings(d_model, vocab_size), pos_enc),
+        generator=Generator(d_model, vocab_size),
+    )
+
+    for p in model.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform_(p)
+
+    if tie_weights:
+        model.generator.proj.weight = model.embed[0].lut.weight
 
     return model
