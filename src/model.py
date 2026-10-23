@@ -66,6 +66,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kv_cache import KVCache
 from modern_components import RMSNorm, SwiGLUFeedForward
 from optimizations import apply_weight_tying
 from rope import RoPEMultiHeadAttention
@@ -176,17 +177,44 @@ class MultiHeadAttention(nn.Module):
         key: torch.Tensor,
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        cache: Optional[KVCache] = None,
+        layer_id: Optional[int] = None,
+        static_kv: bool = False,
     ) -> torch.Tensor:
+        """
+        Without a cache, standard attention over the given key/value.
+
+        With a cache (incremental decoding), K,V are projected only for the
+        given key/value and then:
+          static_kv=False (self-attention): appended to the layer's cached
+              K,V, and attention runs over all cached positions;
+          static_kv=True (cross-attention): projected once from the encoder
+              output on the first step, then reused from the cache.
+        """
         batch_size = query.size(0)
 
         if mask is not None:
             mask = mask.unsqueeze(1)   # broadcast over heads
 
+        def split_heads(lin: nn.Linear, x: torch.Tensor) -> torch.Tensor:
+            return lin(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
+
         # 1) Project Q, K, V → (batch, h, seq, d_k)
-        query, key, value = [
-            lin(x).view(batch_size, -1, self.h, self.d_k).transpose(1, 2)
-            for lin, x in zip(self.linears[:3], (query, key, value))
-        ]
+        if cache is None:
+            query, key, value = [
+                split_heads(lin, x)
+                for lin, x in zip(self.linears[:3], (query, key, value))
+            ]
+        elif static_kv:
+            query = split_heads(self.linears[0], query)
+            key, value = cache.static(layer_id, lambda: (
+                split_heads(self.linears[1], key),
+                split_heads(self.linears[2], value)))
+        else:
+            query = split_heads(self.linears[0], query)
+            key, value = cache.update(layer_id,
+                                      split_heads(self.linears[1], key),
+                                      split_heads(self.linears[2], value))
 
         # 2) Attention over all heads
         x, self.attn_weights = scaled_dot_product_attention(
@@ -322,11 +350,25 @@ class DecoderLayer(nn.Module):
         self.norm_cls = norm_cls
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor,
-                src_mask: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
-        # 1) Masked self-attention (causal)
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
-        # 2) Cross-attention: Q from decoder, K/V from encoder output
-        x = self.sublayer[1](x, lambda x: self.cross_attn(x, memory, memory, src_mask))
+                src_mask: torch.Tensor, tgt_mask: Optional[torch.Tensor],
+                cache: Optional[KVCache] = None,
+                layer_id: Optional[int] = None) -> torch.Tensor:
+        """
+        With a cache, x holds only the new target position(s): self-attention
+        appends their K,V to the cache and cross-attention reuses the
+        encoder-output K,V cached on the first step.
+        """
+        if cache is None:
+            # 1) Masked self-attention (causal)
+            x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
+            # 2) Cross-attention: Q from decoder, K/V from encoder output
+            x = self.sublayer[1](x, lambda x: self.cross_attn(x, memory, memory, src_mask))
+        else:
+            x = self.sublayer[0](x, lambda x: self.self_attn(
+                x, x, x, tgt_mask, cache=cache, layer_id=layer_id))
+            x = self.sublayer[1](x, lambda x: self.cross_attn(
+                x, memory, memory, src_mask,
+                cache=cache, layer_id=layer_id, static_kv=True))
         # 3) Position-wise FFN
         return self.sublayer[2](x, self.feed_forward)
 
@@ -340,9 +382,10 @@ class Decoder(nn.Module):
         self.norm = layer.norm_cls(layer.size)
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor,
-                src_mask: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
-        for layer in self.layers:
-            x = layer(x, memory, src_mask, tgt_mask)
+                src_mask: torch.Tensor, tgt_mask: Optional[torch.Tensor],
+                cache: Optional[KVCache] = None) -> torch.Tensor:
+        for i, layer in enumerate(self.layers):
+            x = layer(x, memory, src_mask, tgt_mask, cache=cache, layer_id=i)
         return self.norm(x)
 
 
@@ -391,8 +434,9 @@ class PositionalEncoding(nn.Module):
         pe = pe.unsqueeze(0)                  # (1, max_len, d_model)
         self.register_buffer("pe", pe)        # not a parameter, but saved with model
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.pe[:, : x.size(1)].requires_grad_(False)
+    def forward(self, x: torch.Tensor, offset: int = 0) -> torch.Tensor:
+        """offset: position of x[:, 0] (> 0 when decoding with a KV cache)."""
+        x = x + self.pe[:, offset: offset + x.size(1)].requires_grad_(False)
         return self.dropout(x)
 
 
@@ -434,8 +478,24 @@ class EncoderDecoder(nn.Module):
         return self.encoder(self.src_embed(src), src_mask)
 
     def decode(self, memory: torch.Tensor, src_mask: torch.Tensor,
-               tgt: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
-        return self.decoder(self.tgt_embed(tgt), memory, src_mask, tgt_mask)
+               tgt: torch.Tensor, tgt_mask: Optional[torch.Tensor],
+               cache: Optional[KVCache] = None) -> torch.Tensor:
+        """
+        Without a cache, tgt is the full target prefix.
+        With a cache (incremental decoding), tgt holds only the new token(s);
+        their positions continue after the cache.seq_len() cached tokens.
+        tgt_mask may be None when feeding a single new token.
+        """
+        if cache is None:
+            return self.decoder(self.tgt_embed(tgt), memory, src_mask, tgt_mask)
+
+        embed, pos_enc = self.tgt_embed[0], self.tgt_embed[1]
+        x = embed(tgt)
+        if isinstance(pos_enc, PositionalEncoding):
+            x = pos_enc(x, offset=cache.seq_len())
+        else:
+            x = pos_enc(x)   # RoPE models: positions applied inside self-attention
+        return self.decoder(x, memory, src_mask, tgt_mask, cache=cache)
 
     def forward(self, src: torch.Tensor, tgt: torch.Tensor,
                 src_mask: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:

@@ -31,7 +31,7 @@ that reduce the number of K,V heads vs Q heads.
 """
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -41,6 +41,11 @@ class KVCache:
     """
     Stores accumulated K and V tensors for each decoder layer and head.
 
+    Two kinds of entries:
+      - self-attention K,V (update): grow by the new token(s) every step.
+      - cross-attention K,V (static): projected from the encoder output once
+        on the first step and reused unchanged afterwards.
+
     Usage:
         cache = KVCache()
         # First call — empty cache
@@ -48,10 +53,14 @@ class KVCache:
         # Second call — appends to cache
         k_full, v_full = cache.update(layer_id=0, new_k=k2, new_v=v2)
         # k_full is now [k, k2] concatenated along seq dimension
+
+    To decode with an EncoderDecoder, pass the cache to model.decode() and
+    feed only the new token each step (see greedy_decode_cached).
     """
 
     def __init__(self):
         self._cache: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._static: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
 
     def update(self, layer_id: int,
                new_k: torch.Tensor,
@@ -73,14 +82,33 @@ class KVCache:
 
         return self._cache[layer_id]
 
+    def static(self, layer_id: int,
+               compute: Callable[[], Tuple[torch.Tensor, torch.Tensor]]
+               ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Cross-attention K, V for this layer: call compute() on the first
+        request, then return the stored tensors on every later step.
+        """
+        if layer_id not in self._static:
+            self._static[layer_id] = compute()
+        return self._static[layer_id]
+
+    def seq_len(self, layer_id: int = 0) -> int:
+        """Number of tokens cached in this layer's self-attention (0 if empty)."""
+        if layer_id not in self._cache:
+            return 0
+        return self._cache[layer_id][0].size(2)
+
     def clear(self) -> None:
         self._cache.clear()
+        self._static.clear()
 
     def numel(self) -> int:
-        """Total number of cached K and V values across all layers."""
+        """Total number of cached self-attention K and V values across all layers."""
         return sum(k.numel() + v.numel() for k, v in self._cache.values())
 
     def __len__(self) -> int:
+        """Number of layers with cached self-attention K, V."""
         return len(self._cache)
 
 
@@ -155,35 +183,36 @@ def greedy_decode_cached(model: nn.Module, src: torch.Tensor,
                          start_symbol: int, end_symbol: int,
                          device: torch.device) -> torch.Tensor:
     """
-    Greedy decode with KV cache.
+    Greedy decode with KV cache. Produces the same tokens as the uncached
+    greedy_decode in inference.py: (len,) ids starting with start_symbol.
 
-    Each step only runs the new token through the decoder and appends to cache,
-    instead of re-running the full sequence from scratch.
+    Each step feeds only the newest token to model.decode() together with
+    the cache. Every decoder layer's self-attention projects K,V for that
+    one token, appends them to the cache and attends over all cached
+    positions (the new token is last, so no causal mask is needed).
+    Cross-attention K,V are projected from the encoder output on the first
+    step and reused from the cache afterwards. The positional encoding is
+    offset by the number of cached tokens.
 
-    For a fair comparison, you'd time this vs the uncached version on long sequences.
-    Speedup is most dramatic for long outputs (50+ tokens).
+    Speedup over the uncached version grows with output length.
     """
     model.eval()
     with torch.no_grad():
         memory = model.encode(src, src_mask)
 
-        # One KV cache per decoder layer
+        # One cache holds K,V for every decoder layer
         cache = KVCache()
-        generated = [start_symbol]
+        ys = torch.full((1, 1), start_symbol, dtype=torch.long, device=device)
 
-        for step in range(max_len - 1):
-            # Feed only the most recent token (with cache, that's all we need)
-            tgt = torch.tensor([[generated[-1]]], dtype=torch.long, device=device)
-
-            # No causal mask needed — cache handles ordering implicitly
-            # (we only ever pass the new token as query)
-            out = model.decode(memory, src_mask, tgt, tgt_mask=None)
+        for _ in range(max_len - 1):
+            # Feed only the most recent token; past K,V come from the cache
+            out = model.decode(memory, src_mask, ys[:, -1:], None, cache=cache)
 
             logits = model.generator(out[:, -1])
-            next_token = logits.argmax(dim=-1).item()
-            generated.append(next_token)
+            next_token = logits.argmax(dim=-1).unsqueeze(0)
+            ys = torch.cat([ys, next_token], dim=1)
 
-            if next_token == end_symbol:
+            if next_token.item() == end_symbol:
                 break
 
-    return torch.tensor(generated, dtype=torch.long)
+    return ys.squeeze(0)

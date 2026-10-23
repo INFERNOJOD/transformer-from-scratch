@@ -41,6 +41,8 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
+from kv_cache import KVCache
+
 
 def precompute_rope_freqs(d_k: int, max_seq_len: int, base: float = 10000.0,
                           device: Optional[torch.device] = None
@@ -79,20 +81,22 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat([-x2, x1], dim=-1)
 
 
-def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
+               offset: int = 0) -> torch.Tensor:
     """
     Apply RoPE to query or key tensor.
 
     Args:
-        x:   (batch, heads, seq_len, d_k)
-        cos: (seq_len, d_k)
-        sin: (seq_len, d_k)
+        x:      (batch, heads, seq_len, d_k)
+        cos:    (max_seq_len, d_k)
+        sin:    (max_seq_len, d_k)
+        offset: position of x[:, :, 0] (> 0 when decoding with a KV cache)
     Returns:
         rotated x with same shape
     """
     seq_len = x.size(2)
-    cos = cos[:seq_len].unsqueeze(0).unsqueeze(0)   # (1, 1, seq, d_k)
-    sin = sin[:seq_len].unsqueeze(0).unsqueeze(0)
+    cos = cos[offset: offset + seq_len].unsqueeze(0).unsqueeze(0)   # (1, 1, seq, d_k)
+    sin = sin[offset: offset + seq_len].unsqueeze(0).unsqueeze(0)
     return x * cos + rotate_half(x) * sin
 
 
@@ -124,7 +128,14 @@ class RoPEMultiHeadAttention(nn.Module):
         self.register_buffer("sin_cached", sin)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
-                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                mask: Optional[torch.Tensor] = None,
+                cache: Optional[KVCache] = None,
+                layer_id: Optional[int] = None) -> torch.Tensor:
+        """
+        Self-attention only. With a KVCache (incremental decoding), the new
+        tokens are rotated at positions after the cached ones and their
+        rotated K, V are appended to the cache.
+        """
         B = query.size(0)
 
         # Project → (B, heads, seq, d_k)
@@ -136,8 +147,11 @@ class RoPEMultiHeadAttention(nn.Module):
         v = reshape(value, self.v_proj)
 
         # Apply RoPE to Q and K only
-        q = apply_rope(q, self.cos_cached, self.sin_cached)
-        k = apply_rope(k, self.cos_cached, self.sin_cached)
+        offset = cache.seq_len(layer_id) if cache is not None else 0
+        q = apply_rope(q, self.cos_cached, self.sin_cached, offset)
+        k = apply_rope(k, self.cos_cached, self.sin_cached, offset)
+        if cache is not None:
+            k, v = cache.update(layer_id, k, v)
 
         # Scaled dot-product attention
         scale = math.sqrt(self.d_k)

@@ -441,6 +441,107 @@ class TestKVCache(unittest.TestCase):
         self.assertEqual(len(cache), 0)
 
 
+class TestCachedDecoding(unittest.TestCase):
+    """Incremental decoding through model.decode(..., cache=KVCache())."""
+
+    N_LAYERS = 2
+
+    def _model(self, seed: int = 0, **flags):
+        from model import make_model
+        torch.manual_seed(seed)
+        model = make_model(40, 40, N=self.N_LAYERS, d_model=32, d_ff=64, h=4,
+                           dropout=0.0, **flags)
+        return model.eval()
+
+    @staticmethod
+    def _greedy_reference(model, src, src_mask, max_len, start, end):
+        """Standard greedy decoding: re-run the full prefix every step."""
+        from model import subsequent_mask
+        with torch.no_grad():
+            memory = model.encode(src, src_mask)
+            ys = torch.full((1, 1), start, dtype=torch.long)
+            for _ in range(max_len - 1):
+                out = model.decode(memory, src_mask, ys, subsequent_mask(ys.size(1)))
+                next_tok = model.generator(out[:, -1]).argmax(dim=-1).unsqueeze(0)
+                ys = torch.cat([ys, next_tok], dim=1)
+                if next_tok.item() == end:
+                    break
+        return ys.squeeze(0)
+
+    def _check_matches_greedy(self, **flags):
+        from kv_cache import greedy_decode_cached
+        cpu = torch.device("cpu")
+        for seed in range(3):
+            model = self._model(seed, **flags)
+            g = torch.Generator().manual_seed(100 + seed)
+            for src_len in (3, 7, 12):
+                src = torch.randint(3, 40, (1, src_len), generator=g)
+                src_mask = (src != 2).unsqueeze(-2)
+                for max_len in (2, 9, 25):
+                    ref = self._greedy_reference(model, src, src_mask, max_len, 0, 1)
+                    out = greedy_decode_cached(model, src, src_mask, max_len, 0, 1, cpu)
+                    self.assertTrue(torch.equal(ref, out),
+                                    f"seed={seed} src_len={src_len} max_len={max_len}: "
+                                    f"{ref.tolist()} != {out.tolist()}")
+                # Early stopping: use a token the model actually emits as EOS
+                full = self._greedy_reference(model, src, src_mask, 25, 0, -1)
+                eos = full[4].item()
+                ref = self._greedy_reference(model, src, src_mask, 25, 0, eos)
+                out = greedy_decode_cached(model, src, src_mask, 25, 0, eos, cpu)
+                self.assertTrue(torch.equal(ref, out))
+                self.assertEqual(out[-1].item(), eos)
+
+    def test_cached_greedy_matches_greedy(self):
+        self._check_matches_greedy()
+
+    def test_cached_greedy_matches_greedy_all_flags(self):
+        self._check_matches_greedy(use_rope=True, use_rmsnorm=True,
+                                   use_swiglu=True, tie_weights=True)
+
+    def test_incremental_outputs_match_full_pass(self):
+        """Decoder outputs per step equal the full causal pass at that position."""
+        from kv_cache import KVCache
+        from model import subsequent_mask
+        for flags in ({}, {"use_rope": True}):
+            model = self._model(1, **flags)
+            src = torch.randint(3, 40, (2, 6))
+            src[1, 4:] = 2   # padding in the second sentence
+            src_mask = (src != 2).unsqueeze(-2)
+            tgt = torch.randint(3, 40, (2, 10))
+            with torch.no_grad():
+                memory = model.encode(src, src_mask)
+                full = model.decode(memory, src_mask, tgt, subsequent_mask(10))
+                cache = KVCache()
+                steps = [model.decode(memory, src_mask, tgt[:, t:t + 1], None, cache=cache)
+                         for t in range(10)]
+            self.assertTrue(torch.allclose(torch.cat(steps, dim=1), full, atol=1e-5),
+                            f"incremental != full pass with flags {flags}")
+
+    def test_cache_grows_by_one_per_step(self):
+        from kv_cache import KVCache
+        model = self._model(2)
+        src = torch.randint(3, 40, (1, 5))
+        src_mask = (src != 2).unsqueeze(-2)
+        cache = KVCache()
+        tok = torch.zeros(1, 1, dtype=torch.long)
+        with torch.no_grad():
+            memory = model.encode(src, src_mask)
+            for step in range(1, 9):
+                out = model.decode(memory, src_mask, tok, None, cache=cache)
+                tok = model.generator(out[:, -1]).argmax(dim=-1, keepdim=True)
+                self.assertEqual(len(cache), self.N_LAYERS)
+                for layer_id in range(self.N_LAYERS):
+                    self.assertEqual(cache.seq_len(layer_id), step)
+                if step == 1:
+                    cross = [cache.static(i, None) for i in range(self.N_LAYERS)]
+        # Cross-attention K,V were projected once (on step 1) and reused
+        for layer_id, (k, v) in enumerate(cross):
+            k_now, v_now = cache.static(layer_id, lambda: self.fail("recomputed"))
+            self.assertIs(k_now, k)
+            self.assertIs(v_now, v)
+            self.assertEqual(k.shape[2], src.size(1))
+
+
 # ─────────────────────────────────────────────
 # Test Suite 9: Flash Attention
 # ─────────────────────────────────────────────
@@ -1103,6 +1204,7 @@ if __name__ == "__main__":
         TestWeightTying,
         TestBeamSearch,
         TestKVCache,
+        TestCachedDecoding,
         TestFlashAttention,
         TestDataPipelineVocab,
         TestAblationFlags,
