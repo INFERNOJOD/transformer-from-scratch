@@ -281,45 +281,67 @@ analysis.
 
 ## Experiment 7 — KV Cache Speed (no retraining needed)
 
-**Date:** _(fill in actual dates)_
+**Status: the original result was invalid and has been withdrawn. The
+fixed benchmark has not been run yet and needs a GPU run.**
 
-**Result — Run 1:**
-```
-Decode Steps | No Cache (ms) | With Cache (ms) | Speedup
--------------|---------------|-----------------|--------
-10           | 53.94         | 51.49           | 1.05×
-20           | 109.87        | 103.87          | 1.06×
-40           | 221.63        | 286.15          | 0.78× (cache SLOWER)
-80           | 439.28        | 433.34          | 1.01×
-```
+**What was reported:** two Colab T4 runs of `src/benchmark.py` showed
+roughly 1× "speedup" for 10-80 decode steps, with one outlier per run at
+a different step count. I attributed this to the small model (3 layers,
+d_model=256) and GPU scheduling noise. Those numbers have been removed
+because they did not measure caching at all.
 
-**Result — Run 2 (independent re-run):**
-```
-Steps | No Cache (ms) | With Cache (ms) | Speedup
-------|---------------|-----------------|--------
-10    | 51.92         | 51.93           | 1.00×
-20    | 104.16        | 104.59          | 1.00×
-40    | 277.21        | 212.55          | 1.30× (cache FASTER here)
-80    | 424.19         | 422.57          | 1.00×
-```
+**Bug 1 — the benchmark compared two identical code paths.** In
+`benchmark_kv_cache`, `decode_with_cache` was a copy of `decode_no_cache`.
+Both re-ran the decoder over the whole growing prefix with a causal mask
+every step, and neither used `KVCache`. Timing the same code twice
+guarantees ~1×. The outliers really were noise, but noise between two
+identical functions. Scale had nothing to do with it.
 
-**Notes — this is the most important "negative result" in this project,
-and worth keeping rather than hiding.** KV cache shows essentially no
-speedup at this scale (3 layers, d_model=256, only 10-80 decode steps) in
-either run. Critically, the one point that deviates from ~1.00× lands at
-*different* step counts in each run (40 steps was slowest in Run 1, but
-fastest in Run 2) — this is strong evidence the deviation is GPU
-scheduling noise, not a structural property of the cache implementation.
-`tests.py`'s `TestKVCache` suite independently confirms the cache produces
-numerically correct accumulated tensors, so this is purely a performance
-characteristic at small scale, not a correctness issue.
+**Bug 2 — the cached decoder was also incorrect.**
+`kv_cache.greedy_decode_cached` fed only the most recent token to
+`model.decode(..., tgt_mask=None)` and never passed the cache to the
+model, which had no way to accept one. Each step therefore decoded a
+one-token sequence at position 0 with no history, and its output did not
+match greedy decoding. `TestKVCache` only checked that `KVCache.update`
+concatenates tensors correctly, so it never tested end-to-end decoding.
 
-**What I'd try next to get a cleaner signal:** benchmark KV cache at a
-larger model size (paper-base: N=6, d_model=512) and longer decode
-lengths (200+ tokens), where the O(n²) cost without caching should start
-to dominate the fixed per-step overhead and the benefit should become
-measurable. This is exactly the kind of follow-up experiment that would
-make a strong answer to "what would you try next."
+**Fixes:**
+- `EncoderDecoder.decode` takes an optional `KVCache` and passes it,
+  with a layer index, through every `DecoderLayer`.
+- Self-attention computes K,V only for the new token and appends them to
+  that layer's cache. The new query then attends over all cached
+  positions.
+- Cross-attention (`static_kv=True`) computes K,V from the encoder output
+  on the first step and reuses them on every later step.
+- The sinusoidal positional encoding is offset by the number of cached
+  tokens. With RoPE, the rotation is offset the same way.
+- `greedy_decode_cached` feeds only the newest token, with the cache, each
+  step.
+- `benchmark.py`: `decode_no_cache` recomputes the full prefix each step,
+  and `decode_with_cache` calls the fixed `greedy_decode_cached`. Both
+  decode the same number of tokens.
+
+**How the fix is verified (CPU unit tests, no timings):**
+- Cached greedy decoding produces exactly the same token sequence as
+  standard greedy decoding on seeded random models, for several inputs,
+  output lengths and an early-EOS case. This also holds with
+  RoPE/RMSNorm/SwiGLU/weight tying.
+- Per-step decoder outputs match the full causal pass.
+- The cache grows by one position per step in every layer, and the
+  cross-attention K,V are computed once.
+- Both benchmark paths produce identical tokens.
+- Before the fix, the old `greedy_decode_cached` disagreed with greedy
+  decoding on 10/10 random inputs.
+
+**Next step:** re-run `python src/benchmark.py --save` on GPU and record
+the new KV cache numbers here. The `kv_cache` entries currently in
+`benchmark_results.json` come from the invalid run.
+
+**Lesson:** a speedup of ~1× between two implementations is a reason to
+diff the two code paths before explaining it with scale or noise. Testing
+that the cache object stores tensors correctly does not show that
+decoding with it is correct. The test that matters is that cached decoding
+gives the same output as uncached decoding.
 
 ---
 
@@ -366,7 +388,7 @@ the paper's full base model (d_model=512).
 | 4 | + RMSNorm + SwiGLU | — | — | implemented, unit-tested, not yet retrained as ablation |
 | 5 | + Weight Tying | — | — | implemented, unit-tested, not yet isolated as ablation |
 | 6 | Flash Attention | — | — | 1.05×–2.39× faster across seq lengths, confirmed in 2 runs |
-| 7 | KV Cache | — | — | **no measurable benefit at this scale** — confirmed in 2 runs |
+| 7 | KV Cache | — | — | original benchmark **invalid** (both paths identical; cached decoder also wrong) — fixed, needs GPU re-run |
 | 8 | Mixed Precision (AMP) | — | — | **slower than FP32 at this scale** — confirmed in 2 runs |
 
 **Verification status:** the full pipeline (install → 39 tests → train →
@@ -383,10 +405,12 @@ original session that built it, not just internally consistent.
   search (k=4). Running `evaluate.py --beam 0` would finally let me state
   beam search's exact contribution instead of citing the paper's typical
   "+1-3 BLEU" range as a guess.
-- **Re-run KV Cache and AMP benchmarks at paper-base scale** (N=6,
-  d_model=512) and with longer decode sequences (200+ tokens). The
-  current "no benefit" finding is itself useful, but the natural follow-up
-  question is "at what scale does it start to matter" — and I don't have
+- **Re-run the fixed KV Cache benchmark on GPU** (Experiment 7). There
+  is currently no valid KV cache measurement.
+- **Re-run the KV Cache and AMP benchmarks at paper-base scale** (N=6,
+  d_model=512) and with longer decode sequences (200+ tokens). AMP's "no
+  benefit" finding is useful in itself, but the natural follow-up
+  question is "at what scale does it start to matter", and I don't have
   that answer yet.
 - **Run RoPE, RMSNorm+SwiGLU, and weight tying as retrained ablations.**
   They are now wired into `train.py` as flags (Experiments 3-5 above), but

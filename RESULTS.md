@@ -171,41 +171,27 @@ the same overall shape (2.39× at seq=64, 1.24× at seq=1024).
 
 ### KV Cache — Autoregressive Decoding
 
-| Decode Steps | No Cache (ms) | With Cache (ms) | Speedup |
-|---|---|---|---|
-| 10 | 53.94 | 51.49 | 1.05× |
-| 20 | 109.87 | 103.87 | 1.06× |
-| 40 | 221.63 | 286.15 | **0.78×** |
-| 80 | 439.28 | 433.34 | 1.01× |
+**Withdrawn: the original benchmark was invalid and must be re-run on
+GPU.** Its "with cache" path in `src/benchmark.py` was a copy of the "no
+cache" path, so both re-ran the decoder over the full prefix every step.
+It timed the same code twice, so a ~1× result was guaranteed. This
+section used to blame model scale and GPU scheduling noise; that was
+wrong. The cached decoder (`kv_cache.greedy_decode_cached`) was also
+incorrect: it passed only the last token to `model.decode` without a
+cache, so it decoded with no history. `TestKVCache` only checked that
+`KVCache.update` concatenates tensors, so it did not catch this.
 
-**Honest finding — KV cache showed essentially no measurable benefit here,
-and was slower at 40 steps in this run.** This is a real result worth
-understanding rather than hiding. Two likely causes:
-
-1. **Scale.** This is a 3-layer, d_model=256 model decoding only 10-80
-   tokens. KV caching eliminates *redundant* K,V computation for past
-   tokens, but the *fixed* per-step overhead (Python loop, kernel launches,
-   tensor concatenation in the cache) is roughly constant regardless of
-   caching. At this small scale, the fixed overhead dominates the
-   savings — the O(n²) → O(n) improvement matters most when n and the
-   model are both large enough that recomputation is actually expensive
-   relative to everything else happening each step.
-2. **GPU scheduling noise.** A second independent benchmark run showed a
-   *different* pattern: near-1× at 10/20/80 steps, but a 1.30× speedup
-   (cache faster) at 40 steps — the "anomaly" landed at a different point
-   each run. This is strong evidence the irregularity is run-to-run timing
-   noise rather than a structural problem with the cache implementation.
-   `tests.py`'s `TestKVCache` suite independently confirms the cache
-   produces numerically correct accumulated K,V tensors, so this is a
-   *performance* characteristic at small scale, not a *correctness* issue.
-
-**What this means in practice:** KV caching is a technique that pays off
-at production LLM scale (billions of parameters, sequences of hundreds to
-thousands of tokens) — exactly where it's used in GPT-4, Claude, etc. At
-this project's intentionally small scale, the benefit is genuinely not
-visible, and pretending otherwise would be dishonest. Understanding *when*
-an optimization technique applies and when it doesn't is itself a useful,
-demonstrable piece of engineering judgment.
+**Fixes:** `model.decode` takes an optional `KVCache` and passes it
+through every decoder layer. Self-attention computes K,V for the new
+token only and appends them to the cache. Cross-attention computes the
+encoder-output K,V on the first step and reuses them. Positional
+encodings (sinusoidal or RoPE) are offset by the cached length.
+`benchmark.py` now times this decoder against full recomputation. New
+tests check that cached greedy decoding produces exactly the same tokens
+as standard greedy decoding, that the cache grows by one position per
+step, and that both benchmark paths produce identical tokens. The old
+numbers have been removed. There are no valid KV cache timings until the
+benchmark is re-run on GPU.
 
 ### Mixed Precision (FP32 vs AMP)
 
@@ -335,10 +321,11 @@ completely fresh repository clone. Beyond the base architecture, six
 modern improvements (RoPE, Flash Attention, KV Cache, RMSNorm, SwiGLU,
 weight tying) were implemented and unit-tested, with real benchmarking
 revealing an honest and useful finding: at this project's intentionally
-small scale, KV Cache and Mixed Precision show little to no measurable
-speedup, while Flash Attention's advantage is real but modest — a concrete
-illustration of *when* these production-LLM optimizations actually start
-to matter. The most surprising result wasn't the BLEU score itself, but
+small scale, Mixed Precision shows little to no measurable speedup, while
+Flash Attention's advantage is real but modest — a concrete illustration
+of *when* these production-LLM optimizations actually start to matter.
+(The original KV Cache benchmark compared two identical code paths. It
+has been fixed but not yet re-run; see the KV Cache section above.) The most surprising result wasn't the BLEU score itself, but
 how consistently the same failure mode (rare compound nouns collapsing to
 `<unk>`) appeared across independently trained models — a clear, specific
 signal pointing at vocabulary coverage, not training variance, as the

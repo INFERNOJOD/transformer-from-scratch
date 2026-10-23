@@ -175,8 +175,8 @@ Measured on Colab T4, PyTorch 2.11.0+cu128 — real output from `src/benchmark.p
 Two independent runs were performed; numbers below are from the first
 complete run (saved in `benchmark_results.json`). A second run showed the
 same overall pattern with normal run-to-run timing variance — see
-`EXPERIMENTS.md` for both data points and discussion of the KV Cache
-result specifically.
+`EXPERIMENTS.md` for both data points. The original KV Cache benchmark was
+invalid and has been withdrawn (see below).
 
 ### Flash Attention vs Standard Attention
 
@@ -194,19 +194,21 @@ matching the expected O(seq²) vs O(seq) difference.
 
 ### KV Cache — Autoregressive Decoding
 
-| Decode Steps | No Cache (ms) | With Cache (ms) | Speedup |
-|---|---|---|---|
-| 10 | 53.94 | 51.49 | 1.05× |
-| 20 | 109.87 | 103.87 | 1.06× |
-| 40 | 221.63 | 286.15 | 0.78× (no measurable improvement at this model scale) |
-| 80 | 439.28 | 433.34 | 1.01× |
-
-**Honest finding:** at this small model scale (3 layers, d_model=256) and
-short decode lengths, KV caching shows close to no measurable benefit. A
-second independent run showed the same near-1× pattern but with the
-"slow" outlier at a different step count — consistent with GPU scheduling
-noise rather than a structural issue. See `RESULTS.md` for the full
-analysis of why KV cache's benefit requires more scale to show clearly.
+**No valid numbers yet: the benchmark needs to be re-run on GPU.** The
+original KV cache benchmark was invalid. Its "with cache" path was a copy
+of the "no cache" path, so it timed the same code twice, and the ~1×
+result says nothing about caching. It was not caused by model scale or
+GPU noise, as this section used to claim. The cached decoder was also
+wrong: it fed only the last token to the decoder without passing the
+cache, so it decoded with no history. Both are fixed. `model.decode` now
+takes a `KVCache` and passes it through every decoder layer:
+self-attention computes K,V only for the new token and appends them to the
+cache, and cross-attention computes the encoder-output K,V once and reuses
+them. `src/benchmark.py` now times this cached decoder against full
+recomputation. Tests check that cached and uncached greedy decoding
+produce identical tokens. The old numbers have been removed (the
+`kv_cache` entries in `benchmark_results.json` come from the invalid
+run). See `EXPERIMENTS.md`, Experiment 7.
 
 ### Mixed Precision (FP32 vs AMP)
 
