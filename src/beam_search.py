@@ -32,7 +32,7 @@ tunes how strongly length is normalised.
 """
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -63,7 +63,8 @@ def beam_search(
     beam_size: int = 4,
     length_penalty: float = 0.6,
     device: Optional[torch.device] = None,
-) -> List[int]:
+    return_hypotheses: bool = False,
+) -> Union[List[int], List[BeamHypothesis]]:
     """
     Beam search decoder.
 
@@ -78,9 +79,12 @@ def beam_search(
         beam_size:      number of beams (4 in paper)
         length_penalty: α in length penalty formula (0.6 in paper)
         device:         torch device
+        return_hypotheses: return every final hypothesis instead of the best
 
     Returns:
-        best token id sequence (excluding BOS, including EOS)
+        best token id sequence (excluding BOS, including EOS), or with
+        return_hypotheses=True the final hypotheses (completed ones, or the
+        surviving beams if none completed), best first, token_ids with BOS
     """
     if device is None:
         device = src.device
@@ -92,10 +96,12 @@ def beam_search(
         memory = memory.expand(beam_size, -1, -1)                  # (B, S, d)
         src_mask = src_mask.expand(beam_size, -1, -1)              # (B, 1, S)
 
-        # Initialise beams — all start with BOS
+        # Initialise with a single BOS beam. Starting with beam_size copies
+        # of the same BOS beam would expand identical prefixes and fill the
+        # beam with duplicate hypotheses; the first step's top-k expansion
+        # of this one beam already yields beam_size distinct hypotheses.
         beams: List[BeamHypothesis] = [
             BeamHypothesis(token_ids=[start_symbol], log_prob=0.0)
-            for _ in range(beam_size)
         ]
         completed: List[BeamHypothesis] = []
 
@@ -149,6 +155,9 @@ def beam_search(
         if not completed:
             completed = beams
 
+        if return_hypotheses:
+            return sorted(completed, key=lambda h: h.score(length_penalty),
+                          reverse=True)
         best = max(completed, key=lambda h: h.score(length_penalty))
         return best.token_ids[1:]   # strip BOS
 

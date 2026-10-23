@@ -130,6 +130,16 @@ Evaluated on:     full validation set (1,014 examples)
 Eval time:        ~8m36s (1.96 it/s on Colab T4)
 ```
 
+**Note — measured with the old beam search initialisation; must be
+re-measured on GPU.** Both runs above used the original `beam_search.py`,
+which started from `beam_size` identical BOS beams. All beams stayed
+copies of the same prefix, so the "k=4" decoder was effectively greedy
+decoding that could also stop early when `</s>` was in the top-k. Beam
+search now starts from a single BOS beam, and tests check that the final
+hypotheses are distinct. The numbers above are kept as measured.
+Re-run `python evaluate.py --checkpoint checkpoints/epoch_08.pt --beam 4`
+on GPU before quoting them as beam-search BLEU.
+
 **BLEU (greedy):** not yet measured separately. To isolate beam search's
 exact contribution, run:
 ```bash

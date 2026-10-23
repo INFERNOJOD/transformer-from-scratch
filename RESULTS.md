@@ -40,6 +40,14 @@ real, not placeholders.
 | Parameters | 9,358,576 | 65M (base model) |
 | Training data | 29K pairs | 4.5M pairs |
 
+> **Note — beam BLEU needs re-measuring.** The 36.37 (and 36.30) beam
+> BLEU was measured with the old `beam_search.py`, which started from
+> `beam_size` identical BOS beams. Every beam stayed a copy of the same
+> prefix, so that decoder was effectively greedy decoding that could also
+> stop early when `</s>` was in the top-k. Beam search now starts from a
+> single BOS beam. The number above is unchanged from that run and must be
+> re-measured on GPU with the fixed decoder (`evaluate.py --beam 4`).
+
 **Why this BLEU is higher than the paper's 27.3 — expected, not a bug:**
 this project trains on Multi30k German→English (~29k short, templated
 image captions), while the paper reports WMT14 English→German (4.5M

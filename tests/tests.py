@@ -402,6 +402,89 @@ class TestBeamSearch(unittest.TestCase):
         self.assertEqual(beam_result, greedy_result,
                          "Beam search with k=1 should match greedy decode")
 
+    # Seeded (model, source) cases shared by the tests below
+    @staticmethod
+    def _cases(n_models: int = 10, n_inputs: int = 3):
+        from model import make_model
+        for seed in range(n_models):
+            torch.manual_seed(seed)
+            model = make_model(30, 30, N=2, d_model=32, d_ff=64, h=4,
+                               dropout=0.0).eval()
+            for _ in range(n_inputs):
+                src = torch.randint(3, 30, (1, 6))
+                yield model, src, (src != 2).unsqueeze(-2)
+
+    @staticmethod
+    def _beam(model, src, src_mask, k, **kw):
+        from beam_search import beam_search
+        return beam_search(model, src, src_mask, max_len=12, start_symbol=0,
+                           end_symbol=1, pad_symbol=2, beam_size=k,
+                           device=torch.device("cpu"), **kw)
+
+    @staticmethod
+    def _log_prob(model, src, src_mask, token_ids):
+        """Model log-probability of token_ids[1:] given BOS + prefix (teacher forcing)."""
+        from model import subsequent_mask
+        with torch.no_grad():
+            memory = model.encode(src, src_mask)
+            tgt = torch.tensor([token_ids[:-1]])
+            out = model.decode(memory, src_mask, tgt, subsequent_mask(tgt.size(1)))
+            log_probs = model.generator(out)[0]
+        return sum(log_probs[i, t].item() for i, t in enumerate(token_ids[1:]))
+
+    def test_no_duplicate_hypotheses(self):
+        for model, src, src_mask in self._cases():
+            for k in (2, 4, 8):
+                hyps = self._beam(model, src, src_mask, k, return_hypotheses=True)
+                seqs = [tuple(h.token_ids) for h in hyps]
+                self.assertEqual(len(seqs), len(set(seqs)),
+                                 f"duplicate hypotheses with beam_size={k}")
+                self.assertTrue(all(s[0] == 0 for s in seqs))
+
+    def test_beam_size_1_matches_greedy_exactly(self):
+        from model import subsequent_mask
+        for model, src, src_mask in self._cases(5, 2):
+            with torch.no_grad():
+                memory = model.encode(src, src_mask)
+                ys = torch.zeros(1, 1, dtype=torch.long)
+                for _ in range(12):
+                    out = model.decode(memory, src_mask, ys, subsequent_mask(ys.size(1)))
+                    next_tok = model.generator(out[:, -1]).argmax(dim=-1, keepdim=True)
+                    ys = torch.cat([ys, next_tok], dim=1)
+                    if next_tok.item() == 1:
+                        break
+            self.assertEqual(self._beam(model, src, src_mask, 1), ys[0, 1:].tolist())
+
+    def test_hypothesis_log_prob_matches_model(self):
+        """Beam bookkeeping: accumulated log_prob == model's teacher-forced log-prob."""
+        for model, src, src_mask in self._cases(4, 2):
+            for h in self._beam(model, src, src_mask, 4, return_hypotheses=True):
+                self.assertAlmostEqual(
+                    h.log_prob, self._log_prob(model, src, src_mask, h.token_ids),
+                    places=4)
+
+    def test_larger_beams_score_at_least_greedy(self):
+        """
+        Larger beams find hypotheses at least as likely as beam_size=1,
+        scored by the model's own log-probability (length_penalty=0, so the
+        beam objective is exactly the log-probability).
+
+        Asserted in aggregate over 30 seeded cases, not per input: beam
+        search is not monotone in beam size (the greedy path can be pruned
+        from a wider beam), and on these untrained models a few individual
+        inputs do score lower with beam_size=2 than with greedy.
+        """
+        totals = {k: 0.0 for k in (1, 2, 4, 8)}
+        for model, src, src_mask in self._cases():
+            for k in totals:
+                best = self._beam(model, src, src_mask, k, length_penalty=0.0,
+                                  return_hypotheses=True)[0]
+                totals[k] += self._log_prob(model, src, src_mask, best.token_ids)
+        for k in (2, 4, 8):
+            self.assertGreaterEqual(totals[k], totals[1],
+                                    f"beam_size={k} scored worse than greedy overall")
+        self.assertGreater(totals[8], totals[1])
+
 
 # ─────────────────────────────────────────────
 # Test Suite 8: KV Cache
