@@ -692,6 +692,147 @@ class TestAblationFlags(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────
+# Test Suite 12: BPE tokenizer
+# ─────────────────────────────────────────────
+
+class TestBPE(unittest.TestCase):
+
+    CORPUS = [
+        "Ein Hund läuft durch den Park.",
+        "Zwei Männer spielen Fußball im Park.",
+        "Ein kleines Kind sitzt auf einer Schaukel.",
+        "Eine Frau liest ein Buch im Café.",
+        "Der Hund spielt mit einem Ball.",
+    ] * 20
+
+    @classmethod
+    def setUpClass(cls):
+        from bpe import BPETokenizer
+        cls.tok = BPETokenizer.train(cls.CORPUS, vocab_size=400)
+
+    def test_encode_decode_round_trip(self):
+        samples = self.CORPUS[:5] + [
+            "",
+            "Eisfischerhütte auf dem See",          # unseen compound
+            "  leading, trailing  and   runs \t\n",  # whitespace edge cases
+            "Ünïcödé — 東京 🙂 ẞ",                   # multi-byte characters
+            "<s> literal special strings </s>",
+        ]
+        for s in samples:
+            self.assertEqual(self.tok.decode(self.tok.encode(s)), s)
+            self.assertEqual(self.tok.detokenize(self.tok.tokenize(s)), s)
+
+    def test_merges_reduce_token_count(self):
+        from bpe import BPETokenizer
+        text = " ".join(self.CORPUS)
+        n_bytes = len(text.encode("utf-8"))
+        bytes_only = BPETokenizer.train(self.CORPUS, vocab_size=260)   # 0 merges
+        small = BPETokenizer.train(self.CORPUS, vocab_size=300)
+        self.assertEqual(len(bytes_only.encode(text)), n_bytes)
+        self.assertLess(len(small.encode(text)), n_bytes)
+        self.assertLess(len(self.tok.encode(text)), len(small.encode(text)))
+
+    def test_frequent_word_becomes_one_token(self):
+        self.assertEqual(len(self.tok.encode(" Hund")), 1)
+
+    def test_unknown_words_never_produce_unk(self):
+        vocab = self.tok.to_vocab()
+        for s in ["Eisfischerhütte", "xylophone quizzically", "東京 🙂", "\x00\x7f"]:
+            ids = self.tok.encode(s)
+            self.assertNotIn(self.tok.unk_id, ids)
+            self.assertNotIn(vocab["<unk>"], vocab(self.tok.tokenize(s)))
+
+    def test_vocab_pipeline_matches_encode(self):
+        vocab = self.tok.to_vocab()
+        s = "Ein Hund spielt im Café."
+        self.assertEqual(vocab(self.tok.tokenize(s)), self.tok.encode(s))
+        self.assertEqual(len(vocab), len(self.tok))
+
+    def test_special_ids_match_word_level_vocab(self):
+        """<s>=0, </s>=1, <blank>=2 are hard-coded in train.collate_fn."""
+        vocab = self.tok.to_vocab()
+        for i, s in enumerate(["<s>", "</s>", "<blank>", "<unk>"]):
+            self.assertEqual(vocab[s], i)
+        # Literal "<s>" in text is just bytes, never the BOS id
+        self.assertNotIn(0, self.tok.encode("<s>"))
+
+    def test_save_load_round_trip(self):
+        import os
+        import tempfile
+        from bpe import BPETokenizer
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "bpe.json")
+            self.tok.save(path)
+            loaded = BPETokenizer.load(path)
+        self.assertEqual(loaded.merges, self.tok.merges)
+        s = "Zwei Hunde spielen im Park."
+        self.assertEqual(loaded.encode(s), self.tok.encode(s))
+        self.assertEqual(BPETokenizer.from_dict(self.tok.to_dict()).merges,
+                         self.tok.merges)
+
+    def test_training_is_deterministic(self):
+        from bpe import BPETokenizer
+        again = BPETokenizer.train(self.CORPUS, vocab_size=400)
+        self.assertEqual(again.merges, self.tok.merges)
+
+    def test_incremental_training_matches_naive_bpe(self):
+        """The fast trainer must learn exactly the merges of textbook BPE."""
+        import random
+        from collections import Counter
+        from bpe import BPETokenizer, PRETOKENIZE, _merge_pair
+
+        rng = random.Random(0)
+        corpus = [" ".join("".join(rng.choice("abcde") for _ in range(rng.randint(1, 6)))
+                           for _ in range(8)) for _ in range(200)]
+        vocab_size, min_freq = 330, 2
+
+        freqs = Counter(w for t in corpus for w in PRETOKENIZE.findall(t))
+        seqs = {w: [4 + b for b in w.encode()] for w in freqs}
+        naive = []
+        while 260 + len(naive) < vocab_size:
+            counts = Counter()
+            for w, f in freqs.items():
+                for p in zip(seqs[w], seqs[w][1:]):
+                    counts[p] += f
+            if not counts:
+                break
+            best = min(counts, key=lambda p: (-counts[p], p))
+            if counts[best] < min_freq:
+                break
+            naive.append(best)
+            seqs = {w: _merge_pair(s, best, 259 + len(naive)) for w, s in seqs.items()}
+
+        fast = BPETokenizer.train(corpus, vocab_size, min_frequency=min_freq)
+        self.assertEqual(fast.merges, naive)
+
+    def test_vocab_size_below_base_raises(self):
+        from bpe import BPETokenizer
+        with self.assertRaises(ValueError):
+            BPETokenizer.train(self.CORPUS, vocab_size=100)
+
+    def test_train_py_bpe_flag_is_opt_in(self):
+        from train import CONFIG, parse_args
+        self.assertFalse(CONFIG["use_bpe"])
+        self.assertFalse(parse_args([]).use_bpe)
+        self.assertTrue(parse_args(["--bpe"]).use_bpe)
+
+    def test_collate_fn_with_bpe_pipeline(self):
+        from train import collate_fn
+        vocab = self.tok.to_vocab()
+        batch = [("Ein Hund läuft.", "A dog runs.")]
+        src, tgt = collate_fn(batch, self.tok.tokenize, self.tok.tokenize,
+                              vocab, vocab, torch.device("cpu"), max_padding=32,
+                              pad_id=vocab["<blank>"])
+        self.assertEqual(src.shape, (1, 32))
+        ids = src[0].tolist()
+        self.assertEqual(ids[0], vocab["<s>"])
+        n = len(self.tok.encode("Ein Hund läuft."))
+        self.assertEqual(ids[n + 1], vocab["</s>"])
+        self.assertTrue(all(i == vocab["<blank>"] for i in ids[n + 2:]))
+        self.assertEqual(self.tok.decode(ids), "Ein Hund läuft.")
+
+
+# ─────────────────────────────────────────────
 # Run all tests
 # ─────────────────────────────────────────────
 
@@ -713,6 +854,7 @@ if __name__ == "__main__":
         TestFlashAttention,
         TestDataPipelineVocab,
         TestAblationFlags,
+        TestBPE,
     ]
 
     for cls in test_classes:

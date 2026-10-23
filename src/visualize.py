@@ -298,6 +298,9 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    if ckpt.get("bpe_src") is not None:
+        raise SystemExit("visualize.py labels heatmaps with spaCy tokens and "
+                         "does not support BPE (train.py --bpe) checkpoints yet.")
     vocab_src = ckpt["vocab_src"]
     vocab_tgt = ckpt["vocab_tgt"]
     cfg = ckpt["config"]

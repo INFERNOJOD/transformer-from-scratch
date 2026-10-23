@@ -32,7 +32,7 @@ tunes how strongly length is normalised.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import torch
 import torch.nn as nn
@@ -154,12 +154,20 @@ def beam_search(
 
 
 def translate_beam(sentence: str, model: nn.Module, vocab_src: Vocab,
-                   vocab_tgt: Vocab, spacy_de: "spacy.language.Language",
+                   vocab_tgt: Vocab, spacy_de: Optional["spacy.language.Language"],
                    device: torch.device, beam_size: int = 4,
-                   max_len: int = 72) -> str:
-    """Convenience wrapper: string → beam search → string."""
+                   max_len: int = 72,
+                   tokenize: Optional[Callable[[str], List[str]]] = None,
+                   detokenize: Optional[Callable[[List[str]], str]] = None) -> str:
+    """
+    Convenience wrapper: string → beam search → string.
+    tokenize / detokenize default to spaCy words joined by spaces.
+    """
     model.eval()
-    tokens = [tok.text for tok in spacy_de.tokenizer(sentence)]
+    if tokenize is None:
+        tokens = [tok.text for tok in spacy_de.tokenizer(sentence)]
+    else:
+        tokens = tokenize(sentence)
     BOS, EOS = vocab_src["<s>"], vocab_src["</s>"]
     PAD = vocab_src["<blank>"]
 
@@ -186,4 +194,4 @@ def translate_beam(sentence: str, model: nn.Module, vocab_src: Vocab,
         if t not in ("<s>", "<blank>"):
             tokens_out.append(t)
 
-    return " ".join(tokens_out)
+    return (detokenize or " ".join)(tokens_out)

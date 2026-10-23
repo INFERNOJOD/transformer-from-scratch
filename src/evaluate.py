@@ -40,7 +40,7 @@ sacrebleu is the standard library — it handles tokenization and normalization
 consistently so different papers can be fairly compared.
 """
 
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import sacrebleu
 import torch
@@ -61,6 +61,7 @@ def evaluate_bleu(
     max_len: int = 72,
     use_beam: bool = True,
     n_examples: Optional[int] = None,
+    detokenize: Optional[Callable[[List[str]], str]] = None,
 ) -> Dict:
     """
     Compute BLEU score on a dataset split.
@@ -75,6 +76,8 @@ def evaluate_bleu(
         max_len:      max output tokens
         use_beam:     if False, uses greedy decode (faster, worse BLEU)
         n_examples:   if set, only evaluate first n examples (for quick check)
+        detokenize:   token strings → text; defaults to " ".join (word-level).
+                      Pass BPETokenizer.detokenize for BPE checkpoints.
 
     Returns:
         dict with 'bleu', 'predictions', 'references'
@@ -84,6 +87,7 @@ def evaluate_bleu(
     if use_beam:
         from beam_search import beam_search as _beam_search
 
+    detokenize = detokenize or " ".join
     model.eval()
     PAD = vocab_src["<blank>"]
     BOS_TGT = vocab_tgt["<s>"]
@@ -135,7 +139,7 @@ def evaluate_bleu(
                     break
                 if t not in ("<s>", "<blank>"):
                     pred_tokens.append(t)
-            predictions.append(" ".join(pred_tokens))
+            predictions.append(detokenize(pred_tokens))
 
             # Detokenise reference (ground truth)
             ref_tokens = []
@@ -145,7 +149,7 @@ def evaluate_bleu(
                     break
                 if t not in ("<s>", "<blank>"):
                     ref_tokens.append(t)
-            references.append(" ".join(ref_tokens))
+            references.append(detokenize(ref_tokens))
 
     # Compute corpus-level BLEU using sacrebleu
     bleu = sacrebleu.corpus_bleu(predictions, [references])
@@ -222,13 +226,25 @@ def main() -> None:
     print(f"Loaded model from epoch {ckpt['epoch']} (val loss: {ckpt['val_loss']:.4f})\n")
 
     # Build the validation dataloader the same way train.py does
+    from bpe import tokenizers_from_checkpoint
     from train import create_dataloaders, load_tokenizers
-    spacy_de, spacy_en = load_tokenizers()
     eval_cfg = cfg.copy()
     eval_cfg["batch_size"] = 1
-    _, val_loader = create_dataloaders(
-        spacy_de, spacy_en, vocab_src, vocab_tgt, eval_cfg, device
-    )
+    bpe = tokenizers_from_checkpoint(ckpt)
+    detokenize = None
+    if bpe is not None:
+        bpe_src, bpe_tgt = bpe
+        print("Checkpoint uses BPE tokenization")
+        _, val_loader = create_dataloaders(
+            None, None, vocab_src, vocab_tgt, eval_cfg, device,
+            src_tokenize=bpe_src.tokenize, tgt_tokenize=bpe_tgt.tokenize,
+        )
+        detokenize = bpe_tgt.detokenize
+    else:
+        spacy_de, spacy_en = load_tokenizers()
+        _, val_loader = create_dataloaders(
+            spacy_de, spacy_en, vocab_src, vocab_tgt, eval_cfg, device
+        )
 
     use_beam = args.beam > 0
     label = f"beam search (k={args.beam})" if use_beam else "greedy decoding"
@@ -239,7 +255,7 @@ def main() -> None:
     result = evaluate_bleu(
         model, val_loader, vocab_src, vocab_tgt, device,
         beam_size=args.beam, use_beam=use_beam,
-        n_examples=args.n_examples,
+        n_examples=args.n_examples, detokenize=detokenize,
     )
 
     print(f"\nBLEU ({label}): {result['bleu']:.2f}")

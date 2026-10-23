@@ -11,6 +11,7 @@ Run (from the repository root):
     python src/train.py                       # baseline (reported results)
     python src/train.py --use-rope            # one ablation
     python src/train.py --use-rmsnorm --use-swiglu --tie-weights
+    python src/train.py --bpe                 # byte-level BPE instead of spaCy words
 or in Colab:
     %run src/train.py
 """
@@ -29,6 +30,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.nn.functional import pad
 
+from bpe import BPETokenizer
 from model import (ABLATION_FLAGS, EncoderDecoder, ablation_kwargs,
                    make_model, subsequent_mask)
 from data_pipeline import Vocab, load_multi30k, build_vocab_from_iterator
@@ -51,6 +53,10 @@ CONFIG = {
     "use_rmsnorm": False,
     "use_swiglu": False,
     "tie_weights": False,
+
+    # Tokenizer — False = spaCy word-level vocab (reported baseline)
+    "use_bpe": False,
+    "bpe_vocab_size": 8000,  # per language, incl. 4 specials + 256 bytes
 
     "batch_size": 128,
     "num_epochs": 8,
@@ -125,6 +131,20 @@ def build_vocab(spacy_de: "spacy.language.Language",
     return vocab_src, vocab_tgt
 
 
+def build_bpe_tokenizers(train_pairs: List[Tuple[str, str]],
+                         vocab_size: int) -> Tuple[BPETokenizer, BPETokenizer]:
+    """
+    Train separate byte-level BPE tokenizers for source (De) and target (En).
+    Only the training split is used, so val/test text never shapes the merges.
+    Special-token ids match the word-level vocab (<s>=0, </s>=1, <blank>=2).
+    """
+    print(f"Training BPE tokenizers (vocab_size={vocab_size})...")
+    bpe_src = BPETokenizer.train((de for de, _ in train_pairs), vocab_size)
+    bpe_tgt = BPETokenizer.train((en for _, en in train_pairs), vocab_size)
+    print(f"BPE vocab sizes — DE: {len(bpe_src)}, EN: {len(bpe_tgt)}")
+    return bpe_src, bpe_tgt
+
+
 # ─────────────────────────────────────────────
 # Data Loading
 # ─────────────────────────────────────────────
@@ -155,13 +175,19 @@ def collate_fn(batch: List[Tuple[str, str]],
     return torch.stack(src_list), torch.stack(tgt_list)
 
 
-def create_dataloaders(spacy_de: "spacy.language.Language",
-                       spacy_en: "spacy.language.Language",
+def create_dataloaders(spacy_de: Optional["spacy.language.Language"],
+                       spacy_en: Optional["spacy.language.Language"],
                        vocab_src: Vocab, vocab_tgt: Vocab, config: Dict,
-                       device: torch.device) -> Tuple[DataLoader, DataLoader]:
-    """Build the Multi30k train and validation DataLoaders."""
-    tok_de = lambda t: tokenize(t, spacy_de)
-    tok_en = lambda t: tokenize(t, spacy_en)
+                       device: torch.device,
+                       src_tokenize: Optional[Callable[[str], List[str]]] = None,
+                       tgt_tokenize: Optional[Callable[[str], List[str]]] = None,
+                       ) -> Tuple[DataLoader, DataLoader]:
+    """
+    Build the Multi30k train and validation DataLoaders.
+    src_tokenize / tgt_tokenize override the spaCy tokenizers (e.g. BPE).
+    """
+    tok_de = src_tokenize or (lambda t: tokenize(t, spacy_de))
+    tok_en = tgt_tokenize or (lambda t: tokenize(t, spacy_en))
     PAD_ID = vocab_src["<blank>"]
 
     fn = lambda b: collate_fn(b, tok_de, tok_en, vocab_src, vocab_tgt,
@@ -314,13 +340,23 @@ def train() -> Tuple[EncoderDecoder, Vocab, Vocab]:
     os.makedirs(CONFIG["checkpoint_dir"], exist_ok=True)
 
     # Data
-    spacy_de, spacy_en = load_tokenizers()
-    vocab_src, vocab_tgt = build_vocab(spacy_de, spacy_en)
+    bpe_src = bpe_tgt = None
+    if CONFIG["use_bpe"]:
+        spacy_de = spacy_en = None
+        train_pairs, _, _ = load_multi30k()
+        bpe_src, bpe_tgt = build_bpe_tokenizers(train_pairs, CONFIG["bpe_vocab_size"])
+        vocab_src, vocab_tgt = bpe_src.to_vocab(), bpe_tgt.to_vocab()
+        train_loader, val_loader = create_dataloaders(
+            None, None, vocab_src, vocab_tgt, CONFIG, DEVICE,
+            src_tokenize=bpe_src.tokenize, tgt_tokenize=bpe_tgt.tokenize,
+        )
+    else:
+        spacy_de, spacy_en = load_tokenizers()
+        vocab_src, vocab_tgt = build_vocab(spacy_de, spacy_en)
+        train_loader, val_loader = create_dataloaders(
+            spacy_de, spacy_en, vocab_src, vocab_tgt, CONFIG, DEVICE
+        )
     PAD_IDX = vocab_src["<blank>"]
-
-    train_loader, val_loader = create_dataloaders(
-        spacy_de, spacy_en, vocab_src, vocab_tgt, CONFIG, DEVICE
-    )
 
     # Model
     model = make_model(
@@ -392,6 +428,9 @@ def train() -> Tuple[EncoderDecoder, Vocab, Vocab]:
             "vocab_src": vocab_src,
             "vocab_tgt": vocab_tgt,
             "config": CONFIG,
+            # BPE merges (plain dicts) so eval/inference can re-tokenize; None = spaCy
+            "bpe_src": bpe_src.to_dict() if bpe_src else None,
+            "bpe_tgt": bpe_tgt.to_dict() if bpe_tgt else None,
         }, ckpt_path)
         print(f"  Saved checkpoint: {ckpt_path}")
 
@@ -423,11 +462,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         parser.add_argument(f"--{flag.replace('_', '-')}", dest=flag,
                             action="store_true",
                             help=f"enable {flag} (default: off)")
+    parser.add_argument("--bpe", dest="use_bpe", action="store_true",
+                        help="byte-level BPE tokenizer (src/bpe.py) instead of "
+                             "spaCy word-level vocab (default: off)")
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = parse_args()
-    for flag in ABLATION_FLAGS:
+    for flag in ABLATION_FLAGS + ("use_bpe",):
         CONFIG[flag] = CONFIG[flag] or getattr(args, flag)
     train()

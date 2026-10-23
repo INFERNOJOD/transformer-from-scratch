@@ -9,12 +9,13 @@ Usage (from the repository root):
 
 import argparse
 import os
-from typing import Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import spacy
 import torch
 
 from beam_search import translate_beam
+from bpe import tokenizers_from_checkpoint
 from data_pipeline import Vocab
 from model import EncoderDecoder, ablation_kwargs, make_model, subsequent_mask
 
@@ -55,13 +56,22 @@ def greedy_decode(model: EncoderDecoder, src: torch.Tensor,
 # ─────────────────────────────────────────────
 
 def translate(sentence: str, model: EncoderDecoder, vocab_src: Vocab,
-              vocab_tgt: Vocab, spacy_de: "spacy.language.Language",
-              device: torch.device, max_len: int = 72) -> str:
-    """Tokenize → encode → greedy decode → detokenize."""
+              vocab_tgt: Vocab, spacy_de: Optional["spacy.language.Language"],
+              device: torch.device, max_len: int = 72,
+              tokenize: Optional[Callable[[str], List[str]]] = None,
+              detokenize: Optional[Callable[[List[str]], str]] = None) -> str:
+    """
+    Tokenize → encode → greedy decode → detokenize.
+    tokenize / detokenize default to spaCy words joined by spaces; pass a
+    BPETokenizer's tokenize / detokenize for BPE checkpoints.
+    """
     model.eval()
 
     # Tokenize + encode
-    tokens = [tok.text for tok in spacy_de.tokenizer(sentence)]
+    if tokenize is None:
+        tokens = [tok.text for tok in spacy_de.tokenizer(sentence)]
+    else:
+        tokens = tokenize(sentence)
     BOS, EOS = vocab_src["<s>"], vocab_src["</s>"]
     src_ids = [BOS] + vocab_src(tokens) + [EOS]
     src = torch.tensor(src_ids, dtype=torch.long, device=device).unsqueeze(0)
@@ -81,23 +91,22 @@ def translate(sentence: str, model: EncoderDecoder, vocab_src: Vocab,
         if t == "</s>":
             break
         result.append(t)
-    return " ".join(result)
+    return (detokenize or " ".join)(result)
 
 
 # ─────────────────────────────────────────────
 # Load model from checkpoint
 # ─────────────────────────────────────────────
 
-def load_model(checkpoint_path: str,
-               device: torch.device) -> Tuple[EncoderDecoder, Vocab, Vocab]:
-    """Rebuild the model from a train.py checkpoint and load its weights."""
+def load_checkpoint(checkpoint_path: str, device: torch.device) -> Dict:
+    """Load a train.py checkpoint (contains Vocab objects, so not weights_only)."""
     print(f"Loading checkpoint: {checkpoint_path}")
-    ckpt = torch.load(
-        checkpoint_path,
-        map_location=device,
-        weights_only=False,
-    )
+    return torch.load(checkpoint_path, map_location=device, weights_only=False)
 
+
+def model_from_checkpoint(ckpt: Dict, device: torch.device
+                          ) -> Tuple[EncoderDecoder, Vocab, Vocab]:
+    """Rebuild the model described by a checkpoint and load its weights."""
     vocab_src = ckpt["vocab_src"]
     vocab_tgt = ckpt["vocab_tgt"]
     cfg = ckpt["config"]
@@ -118,6 +127,12 @@ def load_model(checkpoint_path: str,
     print(f"Loaded model from epoch {ckpt['epoch']} "
           f"(val loss: {ckpt['val_loss']:.4f})")
     return model, vocab_src, vocab_tgt
+
+
+def load_model(checkpoint_path: str,
+               device: torch.device) -> Tuple[EncoderDecoder, Vocab, Vocab]:
+    """Rebuild the model from a train.py checkpoint and load its weights."""
+    return model_from_checkpoint(load_checkpoint(checkpoint_path, device), device)
 
 
 # ─────────────────────────────────────────────
@@ -154,20 +169,28 @@ def main() -> None:
             print("No checkpoint found. Train first: python src/train.py")
             return
 
-    model, vocab_src, vocab_tgt = load_model(args.checkpoint, device)
+    ckpt = load_checkpoint(args.checkpoint, device)
+    model, vocab_src, vocab_tgt = model_from_checkpoint(ckpt, device)
 
-    # Load tokenizer
-    try:
-        spacy_de = spacy.load("de_core_news_sm")
-    except OSError:
-        os.system("python -m spacy download de_core_news_sm")
-        spacy_de = spacy.load("de_core_news_sm")
+    # Load tokenizer: BPE merges stored in the checkpoint, else spaCy
+    bpe = tokenizers_from_checkpoint(ckpt)
+    spacy_de, tokenize, detokenize = None, None, None
+    if bpe is not None:
+        tokenize, detokenize = bpe[0].tokenize, bpe[1].detokenize
+    else:
+        try:
+            spacy_de = spacy.load("de_core_news_sm")
+        except OSError:
+            os.system("python -m spacy download de_core_news_sm")
+            spacy_de = spacy.load("de_core_news_sm")
 
     def run(sentence: str) -> str:
         if args.beam > 0:
             return translate_beam(sentence, model, vocab_src, vocab_tgt,
-                                  spacy_de, device, beam_size=args.beam)
-        return translate(sentence, model, vocab_src, vocab_tgt, spacy_de, device)
+                                  spacy_de, device, beam_size=args.beam,
+                                  tokenize=tokenize, detokenize=detokenize)
+        return translate(sentence, model, vocab_src, vocab_tgt, spacy_de, device,
+                         tokenize=tokenize, detokenize=detokenize)
 
     if args.sentence:
         translation = run(args.sentence)
