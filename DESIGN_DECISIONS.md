@@ -40,8 +40,12 @@ A single attention head computes one weighted average over the sequence —
 averaging inherently discards information about which positions disagreed.
 Multiple heads let the model attend to different things simultaneously
 (e.g., one head tracks syntactic dependencies, another tracks adjacent
-tokens, another tracks rare long-range references — see `attention_sample.png`
-for an illustration of this with synthetic data).
+tokens, another tracks rare long-range references). `assets/attention_sample.png`
+illustrates this with synthetic data. For real heads from the trained model,
+see `attention_maps/`, which is also the source of the README's attention image.
+In `decoder_layers_2_cross_attn.png`, all four cross-attention heads learn a
+near-diagonal source–target alignment but spread their attention differently
+around "soccer" and the final period.
 
 The paper's ablation (Table 3, row A) shows single-head attention is 0.9 BLEU
 worse than h=8, but going beyond 8 heads also degrades quality slightly —
