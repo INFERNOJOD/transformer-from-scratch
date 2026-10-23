@@ -76,6 +76,10 @@ class KVCache:
     def clear(self) -> None:
         self._cache.clear()
 
+    def numel(self) -> int:
+        """Total number of cached K and V values across all layers."""
+        return sum(k.numel() + v.numel() for k, v in self._cache.values())
+
     def __len__(self) -> int:
         return len(self._cache)
 

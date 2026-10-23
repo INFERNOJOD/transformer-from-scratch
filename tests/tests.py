@@ -960,6 +960,131 @@ class TestDecoderOnly(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────
+# Test Suite 14: Grouped Query Attention
+# ─────────────────────────────────────────────
+
+class TestGQA(unittest.TestCase):
+
+    H, D = 8, 64
+
+    def mha(self):
+        from model import MultiHeadAttention
+        torch.manual_seed(0)
+        return MultiHeadAttention(self.H, self.D, dropout=0.0).eval()
+
+    def test_matches_mha_when_kv_heads_equal_heads(self):
+        from gqa import GroupedQueryAttention
+        from model import subsequent_mask
+        mha = self.mha()
+        gqa = GroupedQueryAttention.from_mha(mha).eval()
+        self.assertEqual(gqa.num_kv_heads, self.H)
+        torch.manual_seed(1)
+        x = torch.randn(2, 10, self.D)
+        mask = subsequent_mask(10)
+        self.assertTrue(torch.allclose(gqa(x, x, x, mask), mha(x, x, x, mask), atol=1e-6))
+        self.assertTrue(torch.allclose(gqa.attn_weights, mha.attn_weights, atol=1e-6))
+        # Cross-attention shape (different query / key lengths) with padding mask
+        mem = torch.randn(2, 7, self.D)
+        pad = torch.ones(2, 1, 7, dtype=torch.bool)
+        pad[1, :, 5:] = False
+        self.assertTrue(torch.allclose(gqa(x, mem, mem, pad), mha(x, mem, mem, pad),
+                                       atol=1e-6))
+
+    def test_same_parameter_count_as_mha_when_kv_heads_equal_heads(self):
+        from gqa import GroupedQueryAttention
+        gqa = GroupedQueryAttention(self.H, self.D, num_kv_heads=self.H)
+        n_mha = sum(p.numel() for p in self.mha().parameters())
+        self.assertEqual(sum(p.numel() for p in gqa.parameters()), n_mha)
+
+    def test_output_shapes_for_every_grouping(self):
+        from gqa import GroupedQueryAttention
+        x = torch.randn(2, 6, self.D)
+        for n_kv in (8, 4, 2, 1):
+            attn = GroupedQueryAttention(self.H, self.D, n_kv, dropout=0.0)
+            self.assertEqual(attn(x, x, x).shape, (2, 6, self.D))
+            self.assertEqual(attn.attn_weights.shape, (2, self.H, 6, 6))
+
+    def test_query_heads_in_a_group_share_kv(self):
+        """With 2 KV heads, query heads 0-3 read KV head 0 and 4-7 read KV head 1:
+        giving all query heads identical projections makes heads equal within
+        a group but (generally) different across groups."""
+        from gqa import GroupedQueryAttention
+        attn = GroupedQueryAttention(self.H, self.D, num_kv_heads=2, dropout=0.0)
+        d_k = self.D // self.H
+        with torch.no_grad():
+            w = attn.q_proj.weight[:d_k].clone()
+            attn.q_proj.weight.copy_(w.repeat(self.H, 1))
+            attn.q_proj.bias.zero_()
+        attn(*(torch.randn(1, 5, self.D),) * 3)
+        w = attn.attn_weights[0]
+        for i in range(1, 4):
+            self.assertTrue(torch.allclose(w[0], w[i]))
+            self.assertTrue(torch.allclose(w[4], w[4 + i]))
+        self.assertFalse(torch.allclose(w[0], w[4]))
+
+    def test_kv_cache_shrinks_by_group_factor(self):
+        from gqa import GroupedQueryAttention, kv_cache_reduction
+        from kv_cache import KVCache
+        B, T, n_layers = 2, 12, 3
+        d_k = self.D // self.H
+        sizes = {}
+        for n_kv in (8, 4, 2, 1):
+            layers = [GroupedQueryAttention(self.H, self.D, n_kv, dropout=0.0)
+                      for _ in range(n_layers)]
+            cache = KVCache()
+            for _ in range(T):                      # decode T tokens one at a time
+                x = torch.randn(B, 1, self.D)
+                for i, layer in enumerate(layers):
+                    x = layer(x, x, x, cache=cache, layer_id=i)
+            k, v = cache._cache[0]
+            self.assertEqual(k.shape, (B, n_kv, T, d_k))
+            self.assertEqual(cache.numel(), n_layers * layers[0].kv_cache_numel(B, T))
+            sizes[n_kv] = cache.numel()
+        self.assertEqual(sizes[8], 2 * n_layers * B * self.H * T * d_k)   # MHA baseline
+        for n_kv in (4, 2, 1):
+            self.assertEqual(sizes[8] / sizes[n_kv], kv_cache_reduction(self.H, n_kv))
+
+    def test_cached_decoding_matches_full_causal_pass(self):
+        from gqa import GroupedQueryAttention
+        from kv_cache import KVCache
+        from model import subsequent_mask
+        torch.manual_seed(3)
+        attn = GroupedQueryAttention(self.H, self.D, num_kv_heads=2, dropout=0.0).eval()
+        x = torch.randn(1, 9, self.D)
+        full = attn(x, x, x, subsequent_mask(9))
+        cache = KVCache()
+        steps = [attn(x[:, t:t + 1], x[:, t:t + 1], x[:, t:t + 1], cache=cache)
+                 for t in range(9)]
+        self.assertTrue(torch.allclose(torch.cat(steps, dim=1), full, atol=1e-5))
+
+    def test_from_mha_mean_pools_kv_heads(self):
+        from gqa import GroupedQueryAttention
+        mha = self.mha()
+        gqa = GroupedQueryAttention.from_mha(mha, num_kv_heads=2)
+        d_k = self.D // self.H
+        k_heads = mha.linears[1].weight.view(self.H, d_k, self.D)
+        expected = k_heads.view(2, 4, d_k, self.D).mean(1).reshape(-1, self.D)
+        self.assertTrue(torch.allclose(gqa.k_proj.weight, expected))
+        self.assertTrue(torch.equal(gqa.q_proj.weight, mha.linears[0].weight))
+
+    def test_invalid_grouping_raises(self):
+        from gqa import GroupedQueryAttention
+        with self.assertRaises(AssertionError):
+            GroupedQueryAttention(8, 64, num_kv_heads=3)
+
+    def test_drop_in_for_decoder_only_self_attention(self):
+        from gqa import GroupedQueryAttention
+        from model import make_decoder_only_model
+        model = make_decoder_only_model(30, N=2, d_model=self.D, d_ff=64, h=self.H,
+                                        dropout=0.0)
+        for layer in model.blocks.layers:
+            layer.self_attn = GroupedQueryAttention.from_mha(layer.self_attn, 2)
+        x = torch.randint(0, 30, (2, 7))
+        model.generator(model(x)).mean().backward()
+        self.assertTrue(all(p.grad is not None for p in model.parameters()))
+
+
+# ─────────────────────────────────────────────
 # Run all tests
 # ─────────────────────────────────────────────
 
@@ -983,6 +1108,7 @@ if __name__ == "__main__":
         TestAblationFlags,
         TestBPE,
         TestDecoderOnly,
+        TestGQA,
     ]
 
     for cls in test_classes:
