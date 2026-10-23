@@ -166,45 +166,39 @@ reproduction, not a higher-quality model — see `RESULTS.md` and
 ## Repository Structure
 
 ```
-transformer/
-├── Core
-│   ├── model.py              # Transformer: attention, encoder, decoder, PE
+transformer-from-scratch/
+├── src/
+│   ├── model.py               # Transformer: attention, encoder, decoder, PE
 │   ├── train.py               # Training loop, warmup LR, label smoothing
+│   ├── data_pipeline.py       # Multi30k loading + vocab (replaces deprecated torchtext)
 │   ├── inference.py           # Greedy decoding
-│   └── config.py              # Hyperparameter configs + ablation presets
-│
-├── Improvements
+│   ├── config.py              # Hyperparameter configs + ablation presets
 │   ├── rope.py                # Rotary Positional Embeddings
 │   ├── beam_search.py         # Beam search + length penalty
-│   ├── kv_cache.py            # KV cache for O(n) inference
+│   ├── kv_cache.py            # KV cache for incremental decoding
 │   ├── flash_attention.py     # Tiled + PyTorch Flash Attention
 │   ├── modern_components.py   # RMSNorm + SwiGLU FFN
-│   └── optimizations.py       # Mixed precision (AMP) + weight tying
-│
-├── Evaluation & Analysis
-│   ├── evaluate.py            # BLEU-4 with sacrebleu
+│   ├── optimizations.py       # Mixed precision (AMP) + weight tying
+│   ├── evaluate.py            # BLEU-4 with sacrebleu (CLI)
 │   ├── visualize.py           # Attention heatmaps
 │   ├── benchmark.py           # Latency + memory benchmarks
-│   └── profile_model.py       # torch.profiler — per-layer time/memory
+│   ├── profile_model.py       # torch.profiler — per-op time/memory
+│   └── run_all_experiments.py # One-shot runner: train → eval → bench → profile
 │
-├── Orchestration
-│   └── run_all_experiments.py # One-shot Colab runner: train→eval→bench→profile
+├── tests/
+│   └── tests.py               # 39 unit tests — 39/39 passing
 │
-├── Documentation
-│   ├── README.md               # This file
-│   ├── RESULTS.md              # Publication-style summary of outcomes
-│   ├── EXPERIMENTS.md          # Lab notebook — every run, in order
-│   ├── DESIGN_DECISIONS.md     # Why every component exists
-│   └── LIMITATIONS.md          # Honest scope + roadmap
+├── assets/                    # architecture.png, attention_sample.png, lr_schedule.png
+├── attention_maps/            # Real attention heatmaps from the trained model
+├── training_loss_curve.png    # Train/val loss over 8 epochs
+├── benchmark_results.json     # Raw benchmark output
 │
-├── Assets
-│   ├── assets/architecture.png
-│   ├── assets/attention_sample.png
-│   └── assets/lr_schedule.png
-│
-└── Tests
-    └── tests/
-        └── tests.py            # 39 unit tests — 39/39 passing
+├── README.md                  # This file
+├── RESULTS.md                 # Publication-style summary of outcomes
+├── EXPERIMENTS.md             # Lab notebook — every run, in order
+├── DESIGN_DECISIONS.md        # Why every component exists
+├── LIMITATIONS.md             # Honest scope + roadmap
+└── requirements.txt
 ```
 
 ---
@@ -231,28 +225,28 @@ python -m spacy download en_core_web_sm
 
 ```bash
 # Train
-python train.py
+python src/train.py
 
 # Translate (greedy)
-python inference.py --sentence "Ein Hund läuft durch den Park."
+python src/inference.py --sentence "Ein Hund läuft durch den Park."
 
 # Translate (beam search, k=4)
-python inference.py --sentence "Ein Hund läuft durch den Park." --beam 4
+python src/inference.py --sentence "Ein Hund läuft durch den Park." --beam 4
 
 # Evaluate BLEU
-python evaluate.py --checkpoint checkpoints/epoch_08.pt
+python src/evaluate.py --checkpoint checkpoints/epoch_08.pt
 
 # Run benchmarks
-python benchmark.py --save
+python src/benchmark.py --save
 
 # Per-layer profiling (time + memory breakdown)
-python profile_model.py --seq-len 512 --batch 8
+python src/profile_model.py --seq-len 512 --batch 8
 
 # Attention visualization
-python visualize.py --sentence "Ein Hund läuft durch den Park."
+python src/visualize.py --sentence "Ein Hund läuft durch den Park."
 
 # Run everything in one shot (Colab-friendly)
-python run_all_experiments.py
+python src/run_all_experiments.py
 
 # Run tests
 python tests/tests.py

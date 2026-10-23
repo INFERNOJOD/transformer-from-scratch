@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific
+checkpoints/
+*.pt
+profiler_trace.json
+profiler_summary.txt
+.DS_Store
