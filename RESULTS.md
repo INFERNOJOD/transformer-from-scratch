@@ -26,7 +26,7 @@ real, not placeholders.
 | Epochs | 8 |
 | Hardware | Google Colab, Tesla T4 GPU |
 | Training time | ~20 minutes (fresh-clone verification run) |
-| Unit tests | 39/39 passing |
+| Unit tests | 94/94 passing |
 
 ---
 

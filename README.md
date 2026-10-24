@@ -2,7 +2,7 @@
 
 > From-scratch PyTorch reproduction of "Attention Is All You Need" extended with 13 modern improvements found in LLaMA, GPT-4, and production LLM inference systems.
 
-[![Tests](https://img.shields.io/badge/tests-81%2F81%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-94%2F94%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)]()
 [![PyTorch](https://img.shields.io/badge/pytorch-2.0%2B-orange)]()
 [![Paper](https://img.shields.io/badge/paper-arXiv%3A1706.03762-red)]()
@@ -36,10 +36,10 @@ fresh repository clone:
 | Parameters | 9,358,576 |
 | Training data | 29,000 sentence pairs |
 | Epochs | 8 |
-| Tests | 81/81 passing |
+| Tests | 94/94 passing |
 
 - BLEU verified on a fresh clone over the full validation set (1,014 examples)
-- 81 unit tests covering attention, RoPE, Flash Attention, KV Cache, weight tying, the custom data pipeline, the ablation flags, BPE, decoder-only mode and GQA
+- 94 unit tests covering attention, RoPE, Flash Attention, KV Cache (cached decoding matches greedy), beam search, checkpoint loading, weight tying, the custom data pipeline, the ablation flags, BPE, decoder-only mode and GQA
 - End-to-end benchmarking, attention visualization, and PyTorch profiling — all with real measured numbers
 - All trained results above come from the baseline model. The ablation flags, BPE tokenizer, decoder-only model and GQA are implemented and unit-tested but have **not** been trained yet ([details](#implemented-and-tested-not-yet-trained))
 
@@ -288,7 +288,7 @@ transformer-from-scratch/
 │   └── run_all_experiments.py # One-shot runner: train → eval → bench → profile
 │
 ├── tests/
-│   └── tests.py               # 81 unit tests — 81/81 passing
+│   └── tests.py               # 94 unit tests — 94/94 passing
 │
 ├── assets/                    # architecture.png, attention_sample.png, lr_schedule.png
 ├── attention_maps/            # Real attention heatmaps from the trained model
@@ -324,9 +324,11 @@ test_defaults_build_the_baseline ... ok
 test_encode_decode_round_trip ... ok
 test_causal_masking_holds ... ok
 test_matches_mha_when_kv_heads_equal_heads ... ok
+test_cached_greedy_matches_greedy ... ok
+test_no_duplicate_hypotheses ... ok
 ...
 
-Ran 81 tests in 1.676s
+Ran 94 tests in 4.184s
 ALL TESTS PASSED ✓
 ```
 
